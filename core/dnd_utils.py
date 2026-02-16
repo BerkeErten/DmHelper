@@ -66,3 +66,15 @@ def proficiency_bonus_from_cr(cr) -> int:
         return 9
     # CR 30+ use +9 (same as 29-30)
     return 9
+
+
+def calculate_initiative_from_ability_score(ability_score: int, proficiency_bonus: int = 0, bonus_modifier: int = 0) -> int:
+    """
+    Calculate initiative based on ability score (DEX modifier + optional proficiency and bonus).
+    """
+    base_initiative = (ability_score - 10) // 2
+    return base_initiative + proficiency_bonus + bonus_modifier
+
+
+# Alias for backward compatibility
+calculate_initiative = calculate_initiative_from_ability_score

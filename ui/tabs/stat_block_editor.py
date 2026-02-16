@@ -3,17 +3,19 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit, 
     QPushButton, QTextEdit, QScrollArea, QSizePolicy, QFrame,
     QComboBox, QMessageBox, QApplication, QCheckBox, QListWidget, QListWidgetItem,
-    QInputDialog
+    QInputDialog, QTabWidget
 )
 from PyQt6.QtGui import QFont, QDrag, QPainter, QPixmap
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QMimeData, QPoint
 from datetime import datetime
 from core.database import DatabaseManager
+from core.dnd_utils import calculate_initiative_from_ability_score, proficiency_bonus_from_cr
 from core.events import signal_hub
 from models.entity import Entity
 from models.entity_property import EntityProperty
 from models.entity_section import EntitySection
 import json
+import re
 
 
 class PropertiesDropWidget(QWidget):
@@ -25,7 +27,8 @@ class PropertiesDropWidget(QWidget):
         self.setAcceptDrops(True)
         self.placeholder_widget = None
         self.drag_over = False
-        self.original_style = None
+        self.original_style = STATBLOCK_PANEL_STYLE
+        self.setStyleSheet(self.original_style)
     
     def dragEnterEvent(self, event):
         """Handle drag enter."""
@@ -174,7 +177,8 @@ class SectionsDropWidget(QWidget):
         self.setAcceptDrops(True)
         self.placeholder_widget = None
         self.drag_over = False
-        self.original_style = None
+        self.original_style = STATBLOCK_PANEL_STYLE
+        self.setStyleSheet(self.original_style)
     
     def dragEnterEvent(self, event):
         """Handle drag enter."""
@@ -339,18 +343,23 @@ class PropertyEntryWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)  # Minimal spacing for very tight layout
         
-        # View mode: Display key: value format with bold key
+        # View mode: Display key: value format with bold key (inset for depth)
         self.view_label = QLabel()
         self.view_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self.view_label.setStyleSheet("""
             QLabel {
-                background-color: transparent;
+                background-color: #3c3c3c;
                 color: #CBD5E0;
-                padding: 0px 3px;
+                padding: 4px 8px;
                 border-radius: 4px;
                 font-size: 11px;
-                border: none;
+                border: 1px solid #4c4c4c;
+                border-top-color: #383838;
+                border-left-color: #383838;
+                border-right-color: #505050;
+                border-bottom-color: #505050;
             }
+            QLabel:hover { background-color: #454545; }
         """)
         self.view_label.mouseDoubleClickEvent = self.on_double_click
         self.view_label.setWordWrap(False)  # Disable word wrap to allow full width usage
@@ -375,13 +384,15 @@ class PropertyEntryWidget(QWidget):
                 border-radius: 6px;
                 font-size: 11px;
                 font-weight: 600;
-                border: none;
                 min-width: 80px;
                 text-align: left;
+                border: 1px solid #5a6478;
+                border-top-color: #606c7a;
+                border-left-color: #606c7a;
+                border-right-color: #3d4758;
+                border-bottom-color: #3d4758;
             }
-            QPushButton:hover {
-                background-color: #5A6478;
-            }
+            QPushButton:hover { background-color: #5A6478; }
         """)
         self.key_label.clicked.connect(self.start_edit_key)
         
@@ -418,13 +429,15 @@ class PropertyEntryWidget(QWidget):
                 padding: 6px 12px;
                 border-radius: 6px;
                 font-size: 11px;
-                border: none;
                 min-width: 60px;
                 text-align: left;
+                border: 1px solid #3d4758;
+                border-top-color: #454f60;
+                border-left-color: #454f60;
+                border-right-color: #252d3a;
+                border-bottom-color: #252d3a;
             }
-            QPushButton:hover {
-                background-color: #3D4758;
-            }
+            QPushButton:hover { background-color: #3D4758; }
         """)
         self.value_label.clicked.connect(self.start_edit_value)
         
@@ -661,7 +674,7 @@ class SectionWidget(QWidget):
     content_changed = pyqtSignal(str, str)  # section_type, new_content
     drag_started = pyqtSignal(object)  # widget
     
-    def __init__(self, section_type: str, content: str = "", sort_order: int = 0, is_first: bool = False, parent=None):
+    def __init__(self, section_type: str, content: str = "", sort_order: int = 0, is_first: bool = False, compact: bool = False, parent=None):
         super().__init__(parent)
         self.section_type = section_type
         self.content = content
@@ -669,6 +682,7 @@ class SectionWidget(QWidget):
         self.is_collapsed = False
         self.drag_start_position = None
         self.is_first = is_first
+        self.compact = compact
         self.setAcceptDrops(True)
         self.init_ui()
     
@@ -676,78 +690,95 @@ class SectionWidget(QWidget):
         """Initialize the UI components."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setSpacing(1 if self.compact else 2)
         
         # Edit mode container (hidden by default)
         self.edit_container = QWidget()
         edit_layout = QVBoxLayout(self.edit_container)
         edit_layout.setContentsMargins(0, 0, 0, 0)
-        edit_layout.setSpacing(2)
+        edit_layout.setSpacing(1 if self.compact else 2)
         
-        # Header (collapsible)
-        header = QFrame()
-        header.setStyleSheet("""
+        header_pad = 2 if self.compact else 4
+        header_style = f"""
+            QFrame {{
+                background-color: #3c3c3c;
+                border: 1px solid #4c4c4c;
+                border-top-color: #505050;
+                border-left-color: #505050;
+                border-right-color: #383838;
+                border-bottom-color: #383838;
+                border-radius: 3px;
+                padding: {header_pad}px;
+            }}
+        """ if self.compact else """
             QFrame {
                 background-color: #3c3c3c;
                 border: 1px solid #4c4c4c;
+                border-top-color: #505050;
+                border-left-color: #505050;
+                border-right-color: #383838;
+                border-bottom-color: #383838;
                 border-radius: 4px;
                 padding: 4px;
             }
-        """)
+        """
+        header = QFrame()
+        header.setStyleSheet(header_style)
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(4, 4, 4, 4)
-        header_layout.setSpacing(4)
+        header_layout.setContentsMargins(header_pad, header_pad, header_pad, header_pad)
+        header_layout.setSpacing(2 if self.compact else 4)
         
-        # Collapse button
+        btn_sz = "10px" if self.compact else "12px"
         self.collapse_btn = QPushButton("▼" if not self.is_collapsed else "▶")
-        self.collapse_btn.setStyleSheet("""
-            QPushButton {
+        self.collapse_btn.setStyleSheet(f"""
+            QPushButton {{
                 background-color: transparent;
                 color: #E2E8F0;
                 border: none;
-                font-size: 12px;
-                min-width: 20px;
-                max-width: 20px;
-            }
+                font-size: {btn_sz};
+                min-width: 16px;
+                max-width: 16px;
+            }}
         """)
         self.collapse_btn.clicked.connect(self.toggle_collapse)
         
-        # Section type label
+        type_font = "10px" if self.compact else "14px"
         type_label = QLabel(self.section_type.replace("_", " ").title())
-        type_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #E2E8F0;")
+        type_label.setStyleSheet(f"font-size: {type_font}; font-weight: bold; color: #E2E8F0;")
         
-        # Delete button
+        del_sz = "12px" if self.compact else "14px"
+        del_wh = "18px" if self.compact else "24px"
         self.delete_btn = QPushButton("×")
-        self.delete_btn.setStyleSheet("""
-            QPushButton {
+        self.delete_btn.setStyleSheet(f"""
+            QPushButton {{
                 background-color: rgba(239, 68, 68, 0.3);
                 color: #FCA5A5;
                 border: none;
-                border-radius: 8px;
-                font-size: 14px;
+                border-radius: 6px;
+                font-size: {del_sz};
                 font-weight: bold;
-                min-width: 24px;
-                max-width: 24px;
-                min-height: 24px;
-                max-height: 24px;
-            }
-            QPushButton:hover {
+                min-width: {del_wh};
+                max-width: {del_wh};
+                min-height: {del_wh};
+                max-height: {del_wh};
+            }}
+            QPushButton:hover {{
                 background-color: rgba(239, 68, 68, 0.5);
                 color: white;
-            }
+            }}
         """)
         self.delete_btn.clicked.connect(self.delete_section)
         
-        # Drag handle
+        drag_sz = "12px" if self.compact else "16px"
         drag_handle = QLabel("::")
-        drag_handle.setStyleSheet("""
-            QLabel {
+        drag_handle.setStyleSheet(f"""
+            QLabel {{
                 color: #888888;
-                font-size: 16px;
-                padding: 4px;
-                min-width: 20px;
-                max-width: 20px;
-            }
+                font-size: {drag_sz};
+                padding: 2px;
+                min-width: 14px;
+                max-width: 14px;
+            }}
         """)
         drag_handle.setCursor(Qt.CursorShape.SizeAllCursor)
         drag_handle.mousePressEvent = self.on_drag_handle_press
@@ -759,21 +790,27 @@ class SectionWidget(QWidget):
         header_layout.addStretch()
         header_layout.addWidget(self.delete_btn)
         
-        # Content editor (markdown)
+        content_font = "10px" if self.compact else "11px"
+        content_pad = "2px" if self.compact else "4px"
         self.content_edit = QTextEdit()
         self.content_edit.setPlainText(self.content)
-        self.content_edit.setStyleSheet("""
-            QTextEdit {
+        self.content_edit.setStyleSheet(f"""
+            QTextEdit {{
                 background-color: #2b2b2b;
                 color: #E2E8F0;
                 border: 1px solid #4c4c4c;
                 border-top: none;
-                border-radius: 0 0 4px 4px;
-                padding: 4px;
+                border-left-color: #505050;
+                border-right-color: #383838;
+                border-bottom-color: #383838;
+                border-radius: 0 0 3px 3px;
+                padding: {content_pad};
                 font-family: 'Consolas', 'Monaco', monospace;
-                font-size: 11px;
-            }
+                font-size: {content_font};
+            }}
         """)
+        if self.compact:
+            self.content_edit.setMaximumHeight(120)
         self.content_edit.textChanged.connect(self.on_content_changed)
         
         edit_layout.addWidget(header)
@@ -782,18 +819,19 @@ class SectionWidget(QWidget):
         if self.is_collapsed:
             self.content_edit.setVisible(False)
         
-        # View mode: Display section type and content with bold section type
+        view_font = "10px" if self.compact else "11px"
+        view_pad = "1px 4px" if self.compact else "2px 6px"
         self.view_label = QLabel()
         self.view_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.view_label.setStyleSheet("""
-            QLabel {
+        self.view_label.setStyleSheet(f"""
+            QLabel {{
                 background-color: transparent;
                 color: #CBD5E0;
-                padding: 2px 6px;
-                border-radius: 4px;
-                font-size: 11px;
+                padding: {view_pad};
+                border-radius: 3px;
+                font-size: {view_font};
                 border: none;
-            }
+            }}
         """)
         self.view_label.mouseDoubleClickEvent = self.on_double_click
         self.view_label.setWordWrap(True)
@@ -1581,6 +1619,98 @@ class SavingThrowProficiencyWidget(QWidget):
             self.parent().on_saving_throw_proficiency_removed()
 
 
+# Section types shown in Lore subtab (same as Knowledge Base Info tab)
+LORE_SECTION_TYPES = {"description", "background", "history", "personality", "appearance", "notes", "lore"}
+
+# Depth-only styles: inset/raised borders on inner components, no overall color change
+STATBLOCK_PANEL_STYLE = """
+    QWidget {
+        background-color: #3c3c3c;
+        border: 1px solid #4c4c4c;
+        border-top-color: #505050;
+        border-left-color: #505050;
+        border-right-color: #383838;
+        border-bottom-color: #383838;
+        border-radius: 6px;
+        padding: 8px;
+    }
+"""
+STATBLOCK_SCROLL_STYLE = """
+    QScrollArea { border: none; }
+    QScrollBar:vertical {
+        background: #3c3c3c;
+        width: 10px;
+        border-radius: 5px;
+        margin: 0;
+        border: 1px solid #4c4c4c;
+        border-top-color: #505050;
+        border-left-color: #505050;
+    }
+    QScrollBar::handle:vertical {
+        background: #4c4c4c;
+        border-radius: 4px;
+        min-height: 24px;
+        border: 1px solid #555;
+        border-bottom-color: #3a3a3a;
+        border-right-color: #3a3a3a;
+    }
+    QScrollBar::handle:vertical:hover { background: #5a5a5a; }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+"""
+STATBLOCK_SECTION_HEADER_STYLE = """
+    font-size: 14px;
+    font-weight: bold;
+    color: #E2E8F0;
+    padding: 6px 0;
+    border-bottom: 1px solid #4c4c4c;
+    margin-bottom: 4px;
+"""
+# Wrapper for each lore section so description, background, etc. are visually separate
+STATBLOCK_LORE_SECTION_CARD_STYLE = """
+    QFrame {
+        background-color: #3c3c3c;
+        border: 1px solid #4c4c4c;
+        border-top-color: #505050;
+        border-left-color: #505050;
+        border-right-color: #383838;
+        border-bottom-color: #383838;
+        border-radius: 6px;
+        padding: 6px;
+        margin-bottom: 4px;
+    }
+"""
+STATBLOCK_INNER_TABS_STYLE = """
+    QTabWidget::pane {
+        border: 1px solid #4c4c4c;
+        border-top-color: #383838;
+        border-left-color: #383838;
+        border-right-color: #505050;
+        border-bottom-color: #505050;
+        border-radius: 6px;
+        top: -1px;
+        padding: 0;
+    }
+    QTabBar::tab {
+        background: #3c3c3c;
+        color: #AAAAAA;
+        padding: 8px 16px;
+        margin-right: 2px;
+        border: 1px solid #4c4c4c;
+        border-bottom: none;
+        border-top-left-radius: 6px;
+        border-top-right-radius: 6px;
+        font-size: 12px;
+    }
+    QTabBar::tab:selected {
+        background: transparent;
+        color: #E2E8F0;
+        font-weight: bold;
+        border-bottom: 1px solid transparent;
+    }
+    QTabBar::tab:hover:!selected { background: #454545; }
+"""
+
+
 class StatBlockEditor(QWidget):
     """Complete stat block editor using EntityProperty and EntitySection."""
     
@@ -1602,9 +1732,13 @@ class StatBlockEditor(QWidget):
     
     def setup_ui(self):
         """Setup the UI components."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
+        inner_tabs = QTabWidget()
+        inner_tabs.setDocumentMode(True)
+        inner_tabs.setStyleSheet(STATBLOCK_INNER_TABS_STYLE)
+        stats_page = QWidget()
+        stats_layout = QVBoxLayout(stats_page)
+        stats_layout.setContentsMargins(12, 12, 12, 12)
+        stats_layout.setSpacing(12)
         
         # Title and name
         title_layout = QHBoxLayout()
@@ -1625,9 +1759,14 @@ class StatBlockEditor(QWidget):
                 padding: 6px 12px;
                 border-radius: 6px;
                 border: 1px solid #4c4c4c;
+                border-top-color: #505050;
+                border-left-color: #505050;
+                border-right-color: #383838;
+                border-bottom-color: #383838;
                 font-size: 12px;
                 min-width: 200px;
             }
+            QLineEdit:focus { border-color: #5DADE2; }
         """)
         self.name_input.textChanged.connect(self.on_name_changed)
         title_layout.addWidget(name_label)
@@ -1643,14 +1782,14 @@ class StatBlockEditor(QWidget):
                 border-radius: 6px;
                 font-size: 11px;
                 font-weight: 600;
-                border: none;
+                border: 1px solid #38A169;
+                border-top-color: #52c78a;
+                border-left-color: #52c78a;
+                border-right-color: #2d8558;
+                border-bottom-color: #2d8558;
             }
-            QPushButton:hover {
-                background-color: #38A169;
-            }
-            QPushButton:pressed {
-                background-color: #2F855A;
-            }
+            QPushButton:hover { background-color: #38A169; }
+            QPushButton:pressed { background-color: #2F855A; }
         """)
         self.save_btn.clicked.connect(self.save_entity)
         title_layout.addWidget(self.save_btn)
@@ -1665,11 +1804,13 @@ class StatBlockEditor(QWidget):
                 border-radius: 6px;
                 font-size: 11px;
                 font-weight: 600;
-                border: none;
+                border: 1px solid #6DBDF2;
+                border-top-color: #7dc8f5;
+                border-left-color: #7dc8f5;
+                border-right-color: #4a9dd4;
+                border-bottom-color: #4a9dd4;
             }
-            QPushButton:hover {
-                background-color: #6DBDF2;
-            }
+            QPushButton:hover { background-color: #6DBDF2; }
         """)
         self.add_ability_score_btn.clicked.connect(self.toggle_ability_scores)
         title_layout.addWidget(self.add_ability_score_btn)
@@ -1684,11 +1825,13 @@ class StatBlockEditor(QWidget):
                 border-radius: 6px;
                 font-size: 11px;
                 font-weight: 600;
-                border: none;
+                border: 1px solid #B794F4;
+                border-top-color: #c4a8f7;
+                border-left-color: #c4a8f7;
+                border-right-color: #8060c0;
+                border-bottom-color: #8060c0;
             }
-            QPushButton:hover {
-                background-color: #B794F4;
-            }
+            QPushButton:hover { background-color: #B794F4; }
         """)
         self.add_saving_throw_btn.clicked.connect(self.toggle_saving_throw_proficiency)
         title_layout.addWidget(self.add_saving_throw_btn)
@@ -1703,17 +1846,19 @@ class StatBlockEditor(QWidget):
                 border-radius: 6px;
                 font-size: 11px;
                 font-weight: 600;
-                border: none;
+                border: 1px solid #F6AD55;
+                border-top-color: #f7b962;
+                border-left-color: #f7b962;
+                border-right-color: #c96f20;
+                border-bottom-color: #c96f20;
             }
-            QPushButton:hover {
-                background-color: #F6AD55;
-            }
+            QPushButton:hover { background-color: #F6AD55; }
         """)
         self.add_skill_proficiency_btn.clicked.connect(self.toggle_skill_proficiency)
         title_layout.addWidget(self.add_skill_proficiency_btn)
-        layout.addLayout(title_layout)
+        stats_layout.addLayout(title_layout)
         
-        # CR (Challenge Rating) row
+        # CR and Initiative row
         cr_row = QHBoxLayout()
         cr_label = QLabel("CR:")
         cr_label.setStyleSheet("color: #E2E8F0; font-size: 12px; min-width: 24px;")
@@ -1726,19 +1871,70 @@ class StatBlockEditor(QWidget):
                 padding: 6px 12px;
                 border-radius: 6px;
                 border: 1px solid #4c4c4c;
+                border-top-color: #505050;
+                border-left-color: #505050;
+                border-right-color: #383838;
+                border-bottom-color: #383838;
                 font-size: 12px;
                 max-width: 80px;
             }
+            QLineEdit:focus { border-color: #5DADE2; }
         """)
         cr_row.addWidget(cr_label)
         cr_row.addWidget(self.cr_input)
+        # Initiative (next to CR)
+        init_label = QLabel("Initiative:")
+        init_label.setStyleSheet("color: #E2E8F0; font-size: 12px; min-width: 52px; margin-left: 12px;")
+        self.initiative_input = QLineEdit()
+        self.initiative_input.setPlaceholderText("e.g. +2")
+        self.initiative_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #3c3c3c;
+                color: #E2E8F0;
+                padding: 6px 12px;
+                border-radius: 6px;
+                border: 1px solid #4c4c4c;
+                border-top-color: #505050;
+                border-left-color: #505050;
+                border-right-color: #383838;
+                border-bottom-color: #383838;
+                font-size: 12px;
+                max-width: 60px;
+            }
+            QLineEdit:focus { border-color: #5DADE2; }
+        """)
+        cr_row.addWidget(init_label)
+        cr_row.addWidget(self.initiative_input)
+        # Proficiency Bonus (next to Initiative)
+        pb_label = QLabel("PB:")
+        pb_label.setStyleSheet("color: #E2E8F0; font-size: 12px; min-width: 24px; margin-left: 12px;")
+        self.proficiency_bonus_input = QLineEdit()
+        self.proficiency_bonus_input.setPlaceholderText("e.g. +2")
+        self.proficiency_bonus_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #3c3c3c;
+                color: #E2E8F0;
+                padding: 6px 12px;
+                border-radius: 6px;
+                border: 1px solid #4c4c4c;
+                border-top-color: #505050;
+                border-left-color: #505050;
+                border-right-color: #383838;
+                border-bottom-color: #383838;
+                font-size: 12px;
+                max-width: 50px;
+            }
+            QLineEdit:focus { border-color: #5DADE2; }
+        """)
+        cr_row.addWidget(pb_label)
+        cr_row.addWidget(self.proficiency_bonus_input)
         cr_row.addStretch()
-        layout.addLayout(cr_row)
+        stats_layout.addLayout(cr_row)
         
         # Scroll area for content
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet("border: none;")
+        self.scroll.setStyleSheet(STATBLOCK_SCROLL_STYLE)
         self.scroll_content = QWidget()
         self.scroll_layout = QVBoxLayout(self.scroll_content)
         self.scroll_layout.setContentsMargins(0, 0, 0, 0)
@@ -1758,15 +1954,16 @@ class StatBlockEditor(QWidget):
         
         # Properties section
         props_label = QLabel("Properties")
-        props_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #E2E8F0; margin-top: 10px;")
+        props_label.setStyleSheet(STATBLOCK_SECTION_HEADER_STYLE)
         self.props_label = props_label  # Store reference
         self.scroll_layout.addWidget(props_label)
         
         self.properties_container = PropertiesDropWidget(self)
+        self.properties_container.setMinimumHeight(48)
         self.properties_grid = QGridLayout(self.properties_container)
-        self.properties_grid.setContentsMargins(0, 0, 0, 0)
-        self.properties_grid.setSpacing(0)  # No spacing between properties
-        self.properties_grid.setColumnStretch(0, 1)  # Single column grid
+        self.properties_grid.setContentsMargins(4, 4, 4, 4)
+        self.properties_grid.setSpacing(3)
+        self.properties_grid.setColumnStretch(0, 1)
         self.scroll_layout.addWidget(self.properties_container)
         
         # Track property order
@@ -1782,24 +1979,27 @@ class StatBlockEditor(QWidget):
                 border-radius: 6px;
                 font-size: 11px;
                 font-weight: 600;
-                border: none;
+                border: 1px solid #6DBDF2;
+                border-top-color: #7dc8f5;
+                border-left-color: #7dc8f5;
+                border-right-color: #4a9dd4;
+                border-bottom-color: #4a9dd4;
             }
-            QPushButton:hover {
-                background-color: #6DBDF2;
-            }
+            QPushButton:hover { background-color: #6DBDF2; }
         """)
         self.add_prop_btn.clicked.connect(self.add_property_dialog)
         self.scroll_layout.addWidget(self.add_prop_btn)
         
         # Sections
         sections_label = QLabel("Sections")
-        sections_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #E2E8F0; margin-top: 20px;")
+        sections_label.setStyleSheet(STATBLOCK_SECTION_HEADER_STYLE)
         self.scroll_layout.addWidget(sections_label)
         
         self.sections_container = SectionsDropWidget(self)
+        self.sections_container.setMinimumHeight(60)
         self.sections_grid = QGridLayout(self.sections_container)
-        self.sections_grid.setContentsMargins(0, 0, 0, 0)
-        self.sections_grid.setSpacing(4)
+        self.sections_grid.setContentsMargins(4, 4, 4, 4)
+        self.sections_grid.setSpacing(6)
         self.sections_grid.setColumnStretch(0, 1)
         self.scroll_layout.addWidget(self.sections_container)
         
@@ -1816,11 +2016,13 @@ class StatBlockEditor(QWidget):
                 border-radius: 6px;
                 font-size: 11px;
                 font-weight: 600;
-                border: none;
+                border: 1px solid #6DBDF2;
+                border-top-color: #7dc8f5;
+                border-left-color: #7dc8f5;
+                border-right-color: #4a9dd4;
+                border-bottom-color: #4a9dd4;
             }
-            QPushButton:hover {
-                background-color: #6DBDF2;
-            }
+            QPushButton:hover { background-color: #6DBDF2; }
         """)
         self.add_section_btn.clicked.connect(self.add_section_dialog)
         self.scroll_layout.addWidget(self.add_section_btn)
@@ -1828,7 +2030,76 @@ class StatBlockEditor(QWidget):
         self.scroll_layout.addStretch()
         
         self.scroll.setWidget(self.scroll_content)
-        layout.addWidget(self.scroll)
+        stats_layout.addWidget(self.scroll)
+        
+        inner_tabs.addTab(stats_page, "Stat Block")
+        
+        # Lore tab: lore sections only (for Knowledge Base Info)
+        lore_page = QWidget()
+        lore_layout = QVBoxLayout(lore_page)
+        lore_layout.setContentsMargins(12, 12, 12, 12)
+        lore_layout.setSpacing(8)
+        lore_header = QHBoxLayout()
+        lore_heading = QLabel("Lore & flavor text (Knowledge Base → Info)")
+        lore_heading.setStyleSheet("font-size: 14px; font-weight: bold; color: #E2E8F0;")
+        lore_header.addWidget(lore_heading)
+        lore_header.addStretch()
+        self.lore_save_btn = QPushButton("💾 Save")
+        self.lore_save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #48BB78;
+                color: white;
+                padding: 6px 12px;
+                border-radius: 6px;
+                font-size: 11px;
+                font-weight: 600;
+                border: 1px solid #38A169;
+                border-top-color: #52c78a;
+                border-left-color: #52c78a;
+                border-right-color: #2d8558;
+                border-bottom-color: #2d8558;
+            }
+            QPushButton:hover { background-color: #38A169; }
+        """)
+        self.lore_save_btn.clicked.connect(self.save_entity)
+        lore_header.addWidget(self.lore_save_btn)
+        self.add_lore_section_btn = QPushButton("+ Add Lore Section")
+        self.add_lore_section_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9F7AEA;
+                color: white;
+                padding: 6px 12px;
+                border-radius: 6px;
+                font-size: 11px;
+                font-weight: 600;
+                border: 1px solid #B794F4;
+                border-top-color: #c4a8f7;
+                border-left-color: #c4a8f7;
+                border-right-color: #8060c0;
+                border-bottom-color: #8060c0;
+            }
+            QPushButton:hover { background-color: #B794F4; }
+        """)
+        self.add_lore_section_btn.clicked.connect(self.add_lore_section_dialog)
+        lore_header.addWidget(self.add_lore_section_btn)
+        lore_layout.addLayout(lore_header)
+        lore_scroll = QScrollArea()
+        lore_scroll.setWidgetResizable(True)
+        lore_scroll.setStyleSheet(STATBLOCK_SCROLL_STYLE)
+        lore_scroll_content = QWidget()
+        lore_scroll_content.setMinimumHeight(80)
+        self.lore_sections_layout = QVBoxLayout(lore_scroll_content)
+        self.lore_sections_layout.setContentsMargins(4, 4, 4, 4)
+        self.lore_sections_layout.setSpacing(4)
+        self.lore_sections_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        lore_scroll.setWidget(lore_scroll_content)
+        lore_layout.addWidget(lore_scroll)
+        inner_tabs.addTab(lore_page, "Lore")
+        
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        main_layout.addWidget(inner_tabs)
         
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
     
@@ -1888,6 +2159,7 @@ class StatBlockEditor(QWidget):
                         self.show_ability_scores()
                     if self.ability_scores_widget:
                         self.ability_scores_widget.set_ability_scores(ability_scores)
+                        self._update_initiative_from_dex()
                 
                 # Load saving throw proficiencies if they exist
                 saving_throw_prop = None
@@ -1931,9 +2203,21 @@ class StatBlockEditor(QWidget):
                         self.cr_input.setText(prop.value)
                         break
                 
-                # Load properties (maintain order from database, excluding ability scores and CR)
+                # Load initiative from initiative property
                 for prop in self.entity.properties:
-                    if prop.key not in ability_score_keys and prop.key not in ("challenge_rating", "cr"):
+                    if prop.key == "initiative" and prop.value:
+                        self.initiative_input.setText(prop.value)
+                        break
+                
+                # Load proficiency bonus from proficiency_bonus property
+                for prop in self.entity.properties:
+                    if prop.key == "proficiency_bonus" and prop.value:
+                        self.proficiency_bonus_input.setText(prop.value)
+                        break
+                
+                # Load properties (maintain order from database, excluding ability scores, CR, initiative, proficiency_bonus)
+                for prop in self.entity.properties:
+                    if prop.key not in ability_score_keys and prop.key not in ("challenge_rating", "cr", "initiative", "proficiency_bonus"):
                         self._add_property_widget(prop.key, prop.value)
                 
                 # Load sections (sorted by sort_order)
@@ -1957,6 +2241,8 @@ class StatBlockEditor(QWidget):
     def _clear_widgets(self):
         """Clear all property and section widgets."""
         self.cr_input.clear()
+        self.initiative_input.clear()
+        self.proficiency_bonus_input.clear()
         # Clear ability scores widget
         if self.ability_scores_widget:
             self.ability_scores_widget.setParent(None)
@@ -2052,14 +2338,13 @@ class StatBlockEditor(QWidget):
         
         # Check if this is the first section
         is_first = len(self.section_order) == 0
-        
-        section_widget = SectionWidget(section_type, content, sort_order, is_first=is_first)
+        compact = section_type in LORE_SECTION_TYPES
+        section_widget = SectionWidget(section_type, content, sort_order, is_first=is_first, compact=compact)
         section_widget.content_changed.connect(self.on_section_changed)
         section_widget.drag_started.connect(lambda w: self._on_section_drag_start(w))
         
         # Determine position
         if position is None:
-            # Find position based on sort_order
             position = 0
             for i, st in enumerate(self.section_order):
                 if st in self.section_widgets:
@@ -2069,15 +2354,9 @@ class StatBlockEditor(QWidget):
                         break
                     position = i + 1
         
-        # Add to grid
-        row = position
-        self.sections_grid.addWidget(section_widget, row, 0)
-        
-        # Update order
         if section_type not in self.section_order:
             self.section_order.insert(position, section_type)
         else:
-            # Move to new position
             self.section_order.remove(section_type)
             self.section_order.insert(position, section_type)
         
@@ -2085,32 +2364,52 @@ class StatBlockEditor(QWidget):
         self._refresh_sections_grid()
     
     def _refresh_sections_grid(self):
-        """Refresh sections grid layout."""
-        # Remove all widgets (except placeholder if it exists)
+        """Refresh sections grid (mechanics) and lore layout (lore sections)."""
+        # Remove all widgets from sections grid (except placeholder)
         for i in reversed(range(self.sections_grid.count())):
             item = self.sections_grid.itemAt(i)
             if item:
                 widget = item.widget()
                 if widget and widget != getattr(self.sections_container, 'placeholder_widget', None):
                     self.sections_grid.removeWidget(widget)
+        # Clear lore layout (unwrap section widgets from card frames)
+        while self.lore_sections_layout.count():
+            item = self.lore_sections_layout.takeAt(0)
+            w = item.widget() if item else None
+            if w:
+                # Card frame has one child: the section widget
+                lay = w.layout()
+                if lay and lay.count() > 0:
+                    child_item = lay.takeAt(0)
+                    if child_item and child_item.widget():
+                        child_item.widget().setParent(None)
+                w.deleteLater()
         
-        # Re-add in order
+        mechanics_row = 0
         for i, section_type in enumerate(self.section_order):
-            if section_type in self.section_widgets:
-                widget = self.section_widgets[section_type]
-                widget.sort_order = i  # Update sort_order
-                # Update is_first flag - first section (i == 0) should be bold
-                widget.is_first = (i == 0)
-                # Update view text to reflect is_first status
-                if hasattr(widget, 'update_view_text'):
-                    widget.update_view_text()
-                # Check if placeholder exists at this position
+            if section_type not in self.section_widgets:
+                continue
+            widget = self.section_widgets[section_type]
+            widget.sort_order = i
+            widget.is_first = (i == 0)
+            if hasattr(widget, 'update_view_text'):
+                widget.update_view_text()
+            if section_type in LORE_SECTION_TYPES:
+                card = QFrame()
+                card.setStyleSheet(STATBLOCK_LORE_SECTION_CARD_STYLE)
+                card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+                card_layout = QVBoxLayout(card)
+                card_layout.setContentsMargins(0, 0, 0, 0)
+                card_layout.setSpacing(0)
+                card_layout.addWidget(widget)
+                self.lore_sections_layout.addWidget(card)
+            else:
                 placeholder = getattr(self.sections_container, 'placeholder_widget', None)
-                if placeholder and self.sections_grid.indexOf(placeholder) == i:
-                    # Skip placeholder position, insert after
-                    self.sections_grid.addWidget(widget, i + 1, 0)
+                if placeholder and self.sections_grid.indexOf(placeholder) == mechanics_row:
+                    self.sections_grid.addWidget(widget, mechanics_row + 1, 0)
                 else:
-                    self.sections_grid.addWidget(widget, i, 0)
+                    self.sections_grid.addWidget(widget, mechanics_row, 0)
+                mechanics_row += 1
     
     def _on_section_drag_start(self, widget):
         """Handle section drag start."""
@@ -2159,6 +2458,24 @@ class StatBlockEditor(QWidget):
         max_order = max([w.sort_order for w in self.section_widgets.values()] + [-1])
         self._add_section_widget(section_type, "", max_order + 1)
     
+    def add_lore_section_dialog(self):
+        """Show dialog to add a lore section (for Knowledge Base Info tab)."""
+        section_types = sorted(LORE_SECTION_TYPES)
+        section_type, ok = QInputDialog.getItem(
+            self, "Add Lore Section", "Section type:",
+            section_types, 0, False
+        )
+        if not ok or not section_type:
+            return
+        if section_type in self.section_widgets:
+            QMessageBox.information(
+                self, "Add Lore Section",
+                f"A section named '{section_type}' already exists."
+            )
+            return
+        # Insert at top of list so new lore section appears at top of Lore tab
+        self._add_section_widget(section_type, "", 0, position=0)
+    
     def on_property_edited(self, old_key: str, new_key: str, old_value: str, new_value: str):
         """Handle property edit."""
         # Update widget mapping if key changed
@@ -2179,6 +2496,9 @@ class StatBlockEditor(QWidget):
         """Handle section deletion."""
         if section_type in self.section_widgets:
             self.section_widgets.pop(section_type)
+        if section_type in self.section_order:
+            self.section_order.remove(section_type)
+        self._refresh_sections_grid()
     
     def on_name_changed(self, name: str):
         """Handle name change."""
@@ -2227,7 +2547,38 @@ class StatBlockEditor(QWidget):
         
         # Update button text
         self.add_ability_score_btn.setText("Remove Ability Score")
-    
+        # Sync initiative from DEX when ability scores are opened
+        self._update_initiative_from_dex()
+
+    def _parse_ability_score_to_int(self, value: str) -> int | None:
+        """Parse ability score string (e.g. '14 (+2)' or '14') to integer score. Returns None if unparseable."""
+        if not value or not value.strip():
+            return None
+        match = re.match(r"(\d+)", value.strip())
+        if match:
+            try:
+                return int(match.group(1))
+            except (ValueError, TypeError):
+                pass
+        return None
+
+    def _update_initiative_from_dex(self):
+        """Update initiative property from DEX ability score using dnd_utils.calculate_initiative_from_ability_score."""
+        if not self.ability_scores_widget:
+            return
+        scores = self.ability_scores_widget.get_ability_scores()
+        dex_raw = scores.get("dex") or scores.get("DEX")
+        if dex_raw is None:
+            return
+        dex_int = self._parse_ability_score_to_int(dex_raw)
+        if dex_int is None:
+            return
+        cr_text = self.cr_input.text().strip()
+        proficiency_bonus = proficiency_bonus_from_cr(cr_text) if cr_text else 0
+        initiative = calculate_initiative_from_ability_score(dex_int, proficiency_bonus, 0)
+        value_str = str(initiative) if initiative < 0 else f"+{initiative}"
+        self.initiative_input.setText(value_str)
+
     def on_ability_scores_removed(self):
         """Handle ability scores widget removal."""
         if self.ability_scores_widget:
@@ -2245,7 +2596,8 @@ class StatBlockEditor(QWidget):
     
     def on_ability_score_changed(self, key: str, value: str):
         """Handle ability score change."""
-        pass
+        if key == "dex":
+            self._update_initiative_from_dex()
     
     def _has_ability_scores_or_cr(self) -> bool:
         """Return True if entity has ability scores or proficiency_bonus/challenge_rating (CR)."""
@@ -2457,6 +2809,24 @@ class StatBlockEditor(QWidget):
                         new_prop = EntityProperty(entity_id=entity.id, key="challenge_rating", value=cr_value)
                         db.add(new_prop)
                 
+                # Save Initiative from dedicated field
+                initiative_value = self.initiative_input.text().strip()
+                if "initiative" in existing_props:
+                    existing_props["initiative"].value = initiative_value
+                else:
+                    if initiative_value:
+                        new_prop = EntityProperty(entity_id=entity.id, key="initiative", value=initiative_value)
+                        db.add(new_prop)
+                
+                # Save Proficiency Bonus from dedicated field
+                pb_value = self.proficiency_bonus_input.text().strip()
+                if "proficiency_bonus" in existing_props:
+                    existing_props["proficiency_bonus"].value = pb_value
+                else:
+                    if pb_value:
+                        new_prop = EntityProperty(entity_id=entity.id, key="proficiency_bonus", value=pb_value)
+                        db.add(new_prop)
+                
                 # Save ability scores if widget exists
                 ability_score_keys = ["str", "dex", "con", "int", "wis", "cha"]
                 if self.ability_scores_widget:
@@ -2501,6 +2871,8 @@ class StatBlockEditor(QWidget):
                 # Remove deleted properties (including ability scores if widget was removed)
                 current_keys = set(self.property_widgets.keys())
                 current_keys.add("challenge_rating")  # CR is saved from cr_input
+                current_keys.add("initiative")  # Initiative is saved from initiative_input
+                current_keys.add("proficiency_bonus")  # PB is saved from proficiency_bonus_input
                 if self.ability_scores_widget:
                     # Add ability scores from widget
                     current_keys.update(self.ability_scores_widget.get_ability_scores().keys())

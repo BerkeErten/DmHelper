@@ -69,8 +69,8 @@ class KnowledgeBaseWindow(QWidget):
         super().__init__(parent)
         self.setWindowTitle("Knowledge Base")
         self.setWindowFlags(Qt.WindowType.Window)
-        self.setMinimumSize(560, 420)
-        self.resize(780, 580)
+        self.setMinimumSize(420, 560)
+        self.resize(580, 780)
         self._entity_cache = []  # list of (entity_id, name, type, properties_dict) for filtering
         self._all_property_keys = []  # distinct property keys for dropdown
         self._selected_category = None  # from chips; None = All
@@ -408,7 +408,9 @@ class KnowledgeBaseWindow(QWidget):
         self._clear_detail_layout()
         self._clear_info_layout()
         self.detail_layout.addWidget(self._empty_label)
+        self._empty_label.show()
         self.info_layout.addWidget(self._info_empty)
+        self._info_empty.show()
 
     def _clear_layout_recursive(self, layout):
         """Remove and delete all widgets in a layout and its nested layouts."""
@@ -426,6 +428,7 @@ class KnowledgeBaseWindow(QWidget):
                 child.widget().deleteLater()
             elif child.layout():
                 self._clear_layout_recursive(child.layout())
+        self._empty_label.hide()
 
     def _clear_info_layout(self):
         while self.info_layout.count():
@@ -435,6 +438,7 @@ class KnowledgeBaseWindow(QWidget):
                 w.deleteLater()
             elif child.layout():
                 self._clear_layout_recursive(child.layout())
+        self._info_empty.hide()
 
     def show_entity_detail(self, entity_id: str):
         self._clear_detail_layout()
@@ -508,8 +512,11 @@ class KnowledgeBaseWindow(QWidget):
                     self.detail_layout.addWidget(content_lab)
         self.detail_layout.addStretch()
 
+    # Section types shown in Info tab (lore only; matches statblock viewer lore)
+    _INFO_LORE_SECTIONS = {"description", "background", "history", "personality", "appearance", "notes", "lore"}
+
     def _build_info_content(self, entity: Entity):
-        """Fill Info tab with name, type, and key properties."""
+        """Fill Info tab with name, type, and lore sections only."""
         name_lab = QLabel(entity.name or "Unnamed")
         name_lab.setStyleSheet("font-size: 16px; font-weight: bold; color: #E2E8F0;")
         self.info_layout.addWidget(name_lab)
@@ -517,17 +524,22 @@ class KnowledgeBaseWindow(QWidget):
             type_lab = QLabel(CATEGORY_NAMES.get(entity.type, entity.type.title()))
             type_lab.setStyleSheet("color: #94A3B8; font-size: 12px;")
             self.info_layout.addWidget(type_lab)
-        form = QFormLayout()
-        form.setSpacing(6)
-        for p in sorted(entity.properties or [], key=lambda x: (x.key or "").lower()):
-            if not p.key:
-                continue
-            kl = QLabel(p.key.replace("_", " ").title() + ":")
-            kl.setStyleSheet("color: #94A3B8; font-size: 11px;")
-            vl = QLabel(_format_property_value(p.value))
-            vl.setWordWrap(True)
-            vl.setStyleSheet("color: #CBD5E0; font-size: 11px;")
-            form.addRow(kl, vl)
-        if form.rowCount() > 0:
-            self.info_layout.addLayout(form)
+        if entity.sections:
+            sorted_sections = sorted(entity.sections, key=lambda s: (s.sort_order or 0, s.section_type or ""))
+            for sec in sorted_sections:
+                if (sec.section_type or "").strip().lower() not in self._INFO_LORE_SECTIONS:
+                    continue
+                sec_heading = QLabel(sec.section_type.replace("_", " ").title())
+                sec_heading.setStyleSheet("font-size: 12px; font-weight: bold; color: #94A3B8; margin-top: 12px;")
+                self.info_layout.addWidget(sec_heading)
+                content = (sec.content or "").strip()
+                if content:
+                    content = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", content)
+                    content = content.replace("\n", "<br>")
+                    content_lab = QLabel(content)
+                    content_lab.setWordWrap(True)
+                    content_lab.setTextFormat(Qt.TextFormat.RichText)
+                    content_lab.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                    content_lab.setStyleSheet("color: #CBD5E0; font-size: 11px;")
+                    self.info_layout.addWidget(content_lab)
         self.info_layout.addStretch()

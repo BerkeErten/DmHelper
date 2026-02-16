@@ -3,13 +3,13 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QScrollArea, QFrame, QSizePolicy, QGridLayout, QPushButton,
     QListWidget, QListWidgetItem, QDialog, QDialogButtonBox,
-    QMessageBox
+    QMessageBox, QSplitter, QMenu, QLineEdit
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QTextDocument, QPainter, QColor, QBrush
 from core.database import DatabaseManager
 from core.dice_roller import DiceRoller
-from core.dnd_utils import proficiency_bonus_from_cr
+from core.dnd_utils import proficiency_bonus_from_cr, calculate_initiative_from_ability_score
 from core.events import signal_hub
 from models.entity import Entity
 from models.note import Note
@@ -38,6 +38,270 @@ CONDITION_COLORS = {
 }
 
 
+class CombatTrackerWidget(QWidget):
+    """Widget showing combatants in a side panel (like statblock viewer)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.combatants = []  # list of {"type": "entity"/"note", "id": "...", "name": "..."}
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        header = QHBoxLayout()
+        title = QLabel("Combat Tracker")
+        title.setStyleSheet("font-size: 13px; font-weight: bold; color: #E2E8F0;")
+        header.addWidget(title)
+        header.addStretch()
+
+        self.clear_tracker_btn = QPushButton("Clear")
+        self.clear_tracker_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #5c3c3c;
+                color: #E2E8F0;
+                padding: 4px 10px;
+                border-radius: 4px;
+                font-size: 11px;
+            }
+            QPushButton:hover { background-color: #6c4c4c; }
+        """)
+        self.clear_tracker_btn.clicked.connect(self._clear_combatants)
+        header.addWidget(self.clear_tracker_btn)
+        layout.addLayout(header)
+
+        self.combatants_list = QListWidget()
+        self.combatants_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.combatants_list.customContextMenuRequested.connect(self._show_context_menu)
+        self.combatants_list.setStyleSheet("""
+            QListWidget {
+                background-color: #2b2b2b;
+                color: #E2E8F0;
+                border: 1px solid #4c4c4c;
+                border-radius: 6px;
+                font-size: 11px;
+            }
+            QListWidget::item { padding: 6px; }
+            QListWidget::item:selected { background-color: #3d5a80; }
+            QListWidget::item:hover { background-color: #3c3c3c; }
+        """)
+        layout.addWidget(self.combatants_list)
+
+        self.setMinimumWidth(200)
+
+    def add_combatant(self, item: dict):
+        """Add a combatant; use item['result'] if provided, else roll 1d20+initiative. Allow duplicates (same entity → Name 2, Name 3, ...)."""
+        mod = item.get("initiative")
+        if mod is None:
+            mod = 0
+        if "result" not in item:
+            expr = f"1d20+{mod}" if mod >= 0 else f"1d20{mod}"
+            roll_result = DiceRoller.roll(expr)
+            item["result"] = roll_result.total if roll_result else mod
+        # Index for same entity (1st, 2nd, 3rd...) so we can show "Goblin", "Goblin 2", "Goblin 3"
+        same_count = sum(1 for c in self.combatants if c.get("type") == item.get("type") and c.get("id") == item.get("id"))
+        item["display_index"] = same_count + 1
+        self.combatants.append(item)
+        self._refresh_list()
+
+    def _refresh_list(self):
+        """Display combatants sorted by initiative result descending. Same entity added again: Name 2, Name 3. (result) right. Conditions as colored dots."""
+        def sort_key(c):
+            res = c.get("result")
+            if res is None:
+                res = -999
+            return (-res, (c.get("name") or "Unknown").lower())
+        self.combatants.sort(key=sort_key)
+        self.combatants_list.clear()
+        for i, c in enumerate(self.combatants):
+            icon = "📦" if c.get("type") == "entity" else "📝"
+            base_name = c.get("name", "Unknown")
+            idx = c.get("display_index", 1)
+            display_name = base_name if idx == 1 else f"{base_name} {idx}"
+            result = c.get("result")
+            conditions = c.get("conditions", [])
+            list_item = QListWidgetItem()
+            list_item.setSizeHint(self._combatant_item_size())
+            self.combatants_list.addItem(list_item)
+            row_widget = self._make_combatant_row_widget(f"{icon} {display_name}", result, conditions, i)
+            self.combatants_list.setItemWidget(list_item, row_widget)
+
+    def _combatant_item_size(self):
+        """Return a fixed size for each combatant row so setItemWidget looks correct."""
+        from PyQt6.QtCore import QSize
+        return QSize(200, 28)
+
+    def _make_condition_dot(self, condition_name: str, combatant_index: int) -> QWidget:
+        """Small colored circle for a condition; click removes it."""
+        condition_lower = condition_name.lower().strip()
+        base_color = CONDITION_COLORS.get(condition_lower, "#888888")
+        parent = self
+
+        class ConditionDot(QWidget):
+            def __init__(self, color_hex: str, tooltip_text: str, cond_name: str, idx: int):
+                super().__init__()
+                self.setFixedSize(12, 12)
+                self.setToolTip(f"{tooltip_text}\n(Click to remove)")
+                self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+                self.setMouseTracking(True)
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
+                self._color = QColor(color_hex)
+                self._hover = QColor(
+                    min(255, int(self._color.red() * 1.3)),
+                    min(255, int(self._color.green() * 1.3)),
+                    min(255, int(self._color.blue() * 1.3)),
+                )
+                self._current = self._color
+                self._cond_name = cond_name
+                self._idx = idx
+
+            def enterEvent(self, event):
+                self._current = self._hover
+                self.update()
+                super().enterEvent(event)
+
+            def leaveEvent(self, event):
+                self._current = self._color
+                self.update()
+                super().leaveEvent(event)
+
+            def mousePressEvent(self, event):
+                if event.button() == Qt.MouseButton.LeftButton:
+                    parent.remove_condition_from_combatant(self._idx, self._cond_name)
+                super().mousePressEvent(event)
+
+            def paintEvent(self, event):
+                painter = QPainter(self)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                painter.setBrush(QBrush(self._current))
+                painter.setPen(Qt.PenStyle.NoPen)
+                r = self.rect()
+                s = min(r.width(), r.height()) - 2
+                x, y = (r.width() - s) // 2, (r.height() - s) // 2
+                painter.drawEllipse(x, y, s, s)
+                painter.end()
+
+        return ConditionDot(base_color, condition_name, condition_name, combatant_index)
+
+    def _make_combatant_row_widget(self, name_text: str, result: int | None, conditions: list, combatant_index: int) -> QWidget:
+        """Row: name on left, condition dots, stretch, (result) on right."""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(6, 2, 6, 2)
+        layout.setSpacing(4)
+        left = QLabel(name_text)
+        left.setStyleSheet("color: #E2E8F0; font-size: 11px;")
+        left.setWordWrap(False)
+        layout.addWidget(left)
+        for cond in conditions:
+            layout.addWidget(self._make_condition_dot(cond, combatant_index))
+        layout.addStretch()
+        if result is not None:
+            right = QLabel(f"({result})")
+            right.setStyleSheet("color: #CBD5E0; font-size: 11px; font-weight: bold;")
+            layout.addWidget(right)
+        return row
+
+    def add_condition_to_combatant(self, combatant_index: int, condition_name: str):
+        """Add a condition to the combatant at the given index (in current sorted list) and refresh."""
+        if combatant_index < 0 or combatant_index >= len(self.combatants):
+            return
+        cond_list = self.combatants[combatant_index].setdefault("conditions", [])
+        if condition_name.strip():
+            cond_list.append(condition_name.strip())
+            self._refresh_list()
+
+    def remove_condition_from_combatant(self, combatant_index: int, condition_name: str):
+        """Remove a condition from the combatant at the given index and refresh."""
+        if combatant_index < 0 or combatant_index >= len(self.combatants):
+            return
+        cond_list = self.combatants[combatant_index].get("conditions", [])
+        condition_lower = condition_name.lower()
+        self.combatants[combatant_index]["conditions"] = [c for c in cond_list if c.lower() != condition_lower]
+        self._refresh_list()
+
+    def _clear_combatants(self):
+        if self.combatants:
+            reply = QMessageBox.question(
+                self, "Clear Tracker",
+                "Remove all combatants from the tracker?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.combatants.clear()
+                self._refresh_list()
+
+    def _show_context_menu(self, pos):
+        item = self.combatants_list.itemAt(pos)
+        if not item:
+            return
+        row = self.combatants_list.row(item)
+        if row < 0 or row >= len(self.combatants):
+            return
+        menu = QMenu(self)
+        add_cond_act = menu.addAction("➕ Add Condition")
+        remove_act = menu.addAction("Remove from tracker")
+        action = menu.exec(self.combatants_list.mapToGlobal(pos))
+        if action == add_cond_act:
+            self._show_add_condition_dialog(row)
+        elif action == remove_act:
+            self.combatants.pop(row)
+            self._refresh_list()
+
+    def _show_add_condition_dialog(self, combatant_index: int):
+        """Show dialog to pick or enter a condition, then add it to the combatant."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Condition")
+        dialog.setMinimumWidth(320)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Condition:"))
+        known = list(CONDITION_COLORS.keys())
+        combo = QComboBox()
+        combo.addItems([c.title() for c in known])
+        combo.addItem("Other")
+        combo.setStyleSheet("""
+            QComboBox {
+                background-color: #3c3c3c;
+                color: #E2E8F0;
+                padding: 6px;
+                border-radius: 4px;
+                font-size: 11px;
+            }
+        """)
+        layout.addWidget(combo)
+        other_edit = QLineEdit()
+        other_edit.setPlaceholderText("Custom condition name...")
+        other_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: #3c3c3c;
+                color: #E2E8F0;
+                padding: 6px;
+                border-radius: 4px;
+                font-size: 11px;
+            }
+        """)
+        layout.addWidget(other_edit)
+        other_edit.setVisible(False)
+
+        def on_combo(i):
+            other_edit.setVisible(i == len(known))
+
+        combo.currentIndexChanged.connect(on_combo)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            if combo.currentIndex() == len(known):
+                name = other_edit.text().strip()
+            else:
+                name = known[combo.currentIndex()]
+            if name:
+                self.add_condition_to_combatant(combatant_index, name)
+
+
 class StatBlockViewerWidget(QWidget):
     """Widget that displays statblocks visually - game mechanics only, no lore."""
 
@@ -63,16 +327,25 @@ class StatBlockViewerWidget(QWidget):
         super().__init__(parent)
         self.current_entity = None
         self.custom_list = []  # List of items: [{"type": "entity"/"note", "id": "...", "name": "..."}, ...]
+        self.combat_mode = False
+        self.combat_tracker_widget = None
+        self.combat_splitter = None
         self.setup_ui()
         self.connect_signals()
         
     def setup_ui(self):
         """Setup the UI components."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        self.root_layout = QVBoxLayout(self)
+        self.root_layout.setContentsMargins(10, 10, 10, 10)
+        self.root_layout.setSpacing(10)
+        
+        # Main content (list + display) - can be put in splitter with combat tracker
+        self.main_content_widget = QWidget()
+        layout = QVBoxLayout(self.main_content_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
         
-        # Header with title and add button
+        # Header with title and buttons
         header_layout = QHBoxLayout()
         header_label = QLabel("StatBlock Viewer - Custom List")
         header_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #E2E8F0;")
@@ -116,6 +389,26 @@ class StatBlockViewerWidget(QWidget):
         """)
         self.clear_list_btn.clicked.connect(self.clear_list)
         header_layout.addWidget(self.clear_list_btn)
+        
+        # Start Combat button (red, sword) - toggles to "End Combat" in combat mode
+        self.start_combat_btn = QPushButton("\u2694 Start Combat")
+        self.start_combat_btn.setToolTip("Split view and enable combat tracker; double-click list items to add to tracker.")
+        self.start_combat_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #8B0000;
+                color: white;
+                padding: 6px 12px;
+                border-radius: 6px;
+                font-size: 11px;
+                font-weight: 600;
+                border: 1px solid #a52a2a;
+            }
+            QPushButton:hover {
+                background-color: #a52a2a;
+            }
+        """)
+        self.start_combat_btn.clicked.connect(self._toggle_combat_mode)
+        header_layout.addWidget(self.start_combat_btn)
         
         layout.addLayout(header_layout)
         
@@ -164,9 +457,9 @@ class StatBlockViewerWidget(QWidget):
         layout.addWidget(self.items_list)
         
         # Scroll area for displaying all items
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("""
+        self.display_scroll = QScrollArea()
+        self.display_scroll.setWidgetResizable(True)
+        self.display_scroll.setStyleSheet("""
             QScrollArea {
                 border: 1px solid #4c4c4c;
                 border-radius: 6px;
@@ -193,10 +486,14 @@ class StatBlockViewerWidget(QWidget):
         self.display_layout.addWidget(self.placeholder)
         self.display_layout.addStretch()
         
-        scroll.setWidget(self.display_widget)
-        layout.addWidget(scroll)
+        self.display_scroll.setWidget(self.display_widget)
+        layout.addWidget(self.display_scroll)
         
-        # Set minimum width
+        # Combat tracker (shown in splitter when entering combat mode, like statblock viewer)
+        self.combat_tracker_widget = CombatTrackerWidget(self)
+
+        # Start with only main content
+        self.root_layout.addWidget(self.main_content_widget)
         self.setMinimumWidth(350)
         
     def connect_signals(self):
@@ -204,7 +501,62 @@ class StatBlockViewerWidget(QWidget):
         signal_hub.data_saved.connect(self.on_data_saved)
         signal_hub.data_selected.connect(self.on_data_selected)
         signal_hub.add_to_stat_block_list.connect(self.add_item_to_list)
-    
+
+    def _toggle_combat_mode(self):
+        """Switch between normal view and combat view (splitter with combat tracker)."""
+        self.combat_mode = not self.combat_mode
+        if self.combat_mode:
+            self._enter_combat_mode()
+        else:
+            self._leave_combat_mode()
+
+    def _enter_combat_mode(self):
+        """Show splitter: main content | combat tracker."""
+        self.root_layout.removeWidget(self.main_content_widget)
+        self.combat_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.combat_splitter.addWidget(self.main_content_widget)
+        self.combat_splitter.addWidget(self.combat_tracker_widget)
+        self.combat_splitter.setStretchFactor(0, 1)
+        self.combat_splitter.setStretchFactor(1, 0)
+        self.combat_splitter.setSizes([400, 220])
+        self.root_layout.addWidget(self.combat_splitter)
+        self.start_combat_btn.setText("\u2694 End Combat")
+        self.start_combat_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #5c3c3c;
+                color: white;
+                padding: 6px 12px;
+                border-radius: 6px;
+                font-size: 11px;
+                font-weight: 600;
+                border: 1px solid #6c4c4c;
+            }
+            QPushButton:hover { background-color: #6c4c4c; }
+        """)
+
+    def _leave_combat_mode(self):
+        """Hide splitter, show only main content."""
+        if self.combat_splitter:
+            self.root_layout.removeWidget(self.combat_splitter)
+            self.combat_splitter.removeWidget(self.main_content_widget)
+            self.combat_splitter.removeWidget(self.combat_tracker_widget)
+            self.combat_splitter.deleteLater()
+            self.combat_splitter = None
+        self.root_layout.addWidget(self.main_content_widget)
+        self.start_combat_btn.setText("\u2694 Start Combat")
+        self.start_combat_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #8B0000;
+                color: white;
+                padding: 6px 12px;
+                border-radius: 6px;
+                font-size: 11px;
+                font-weight: 600;
+                border: 1px solid #a52a2a;
+            }
+            QPushButton:hover { background-color: #a52a2a; }
+        """)
+
     def show_add_item_dialog(self):
         """Show dialog to add items to the custom list."""
         dialog = AddItemDialog(self)
@@ -893,18 +1245,22 @@ class StatBlockViewerWidget(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to remove condition: {str(e)}")
     
     def on_item_double_clicked(self, item: QListWidgetItem):
-        """Handle double-click on list item to remove it."""
+        """In combat mode: add item to combat tracker. Otherwise: prompt to remove from list."""
         data = item.data(Qt.ItemDataRole.UserRole)
-        if data:
-            reply = QMessageBox.question(
-                self,
-                "Remove Item",
-                f"Remove '{data['name']}' from the list?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                index = self.items_list.row(item)
-                self.remove_item_from_list(index)
+        if not data:
+            return
+        if self.combat_mode and self.combat_tracker_widget:
+            self.combat_tracker_widget.add_combatant(data)
+            return
+        reply = QMessageBox.question(
+            self,
+            "Remove Item",
+            f"Remove '{data['name']}' from the list?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            index = self.items_list.row(item)
+            self.remove_item_from_list(index)
     
     def on_item_selection_changed(self):
         """Handle item selection change - display only selected item."""
@@ -1080,7 +1436,13 @@ class StatBlockViewerWidget(QWidget):
         entity_layout.setContentsMargins(0, 0, 0, 0)
         entity_layout.setSpacing(12)
         
-        # Title (entity name)
+        # Properties dict (needed early for initiative in header)
+        props_list = list(entity.properties) if hasattr(entity, 'properties') and entity.properties else []
+        props_dict = {p.key: p.value for p in props_list}
+        
+        # Top row: Title (left) | Initiative (right, italic, clickable)
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
         title = QLabel(entity.name)
         title.setStyleSheet("""
             QLabel {
@@ -1091,6 +1453,24 @@ class StatBlockViewerWidget(QWidget):
                 margin-bottom: 0px;
             }
         """)
+        title_row.addWidget(title)
+        title_row.addStretch()
+        # Initiative: use saved value or compute from DEX + proficiency
+        initiative_value = props_dict.get("initiative", "").strip()
+        if not initiative_value and props_dict.get("dex"):
+            try:
+                score_str, _ = self.parse_ability_score(props_dict["dex"])
+                if score_str:
+                    dex_int = int(score_str)
+                    prof = self.get_proficiency_bonus(entity)
+                    init_int = calculate_initiative_from_ability_score(dex_int, prof, 0)
+                    initiative_value = f"+{init_int}" if init_int >= 0 else str(init_int)
+            except (ValueError, TypeError):
+                pass
+        if initiative_value:
+            initiative_btn = self._create_initiative_display(initiative_value, entity)
+            title_row.addWidget(initiative_btn)
+        entity_layout.addLayout(title_row)
         
         # Title separator (thin line under title)
         title_separator = QFrame()
@@ -1103,7 +1483,6 @@ class StatBlockViewerWidget(QWidget):
             }
         """)
         title_separator.setFixedHeight(1)
-        entity_layout.addWidget(title)
         entity_layout.addWidget(title_separator)
         
         # Type label
@@ -1118,10 +1497,6 @@ class StatBlockViewerWidget(QWidget):
                 }
             """)
             entity_layout.addWidget(type_label)
-        
-        # Get all properties as dictionary
-        props_list = list(entity.properties) if hasattr(entity, 'properties') and entity.properties else []
-        props_dict = {p.key: p.value for p in props_list}
         
         # Display ability scores first (if they exist)
         ability_score_keys = ["str", "dex", "con", "int", "wis", "cha"]
@@ -1190,7 +1565,7 @@ class StatBlockViewerWidget(QWidget):
                         ordered_props.append((key, props_dict[key]))
             
             for key, value in props_dict.items():
-                if key not in prop_order and key not in ability_score_keys and key not in ("skill_proficiencies", "saving_throw_proficiencies"):
+                if key not in prop_order and key not in ability_score_keys and key not in ("skill_proficiencies", "saving_throw_proficiencies", "initiative"):
                     remaining_props.append((key, value))
             
             all_props = ordered_props + remaining_props
@@ -1227,6 +1602,71 @@ class StatBlockViewerWidget(QWidget):
         # Add entity widget to main display
         self.display_layout.addWidget(entity_widget)
     
+    def _parse_initiative_to_int(self, value: str):
+        """Parse initiative string (e.g. '+2', '-1', '2') to int. Returns None if unparseable."""
+        if not value:
+            return None
+        s = value.strip()
+        if not s:
+            return None
+        if s.startswith("+"):
+            s = s[1:]
+        try:
+            return int(s)
+        except (ValueError, TypeError):
+            return None
+
+    def _create_initiative_display(self, initiative_value: str, entity: Entity) -> QWidget:
+        """Create italic 'Initiative +X' line; click: if combat started add to tracker, else show result in dice console."""
+        # Display text: "Initiative +2" or "Initiative -1"
+        bonus_str = initiative_value.strip()
+        try:
+            n = int(bonus_str.replace("+", ""))
+            bonus_str = f"+{n}" if n >= 0 else str(n)
+        except (ValueError, TypeError):
+            if not bonus_str.startswith("+") and not bonus_str.startswith("-"):
+                pass  # keep as-is
+        display_text = f"Initiative {bonus_str}"
+        initiative_int = self._parse_initiative_to_int(initiative_value)
+        # Capture id/name while entity is still bound to session (avoid DetachedInstanceError on click)
+        entity_id = entity.id
+        entity_name = entity.name
+
+        btn = QPushButton(display_text)
+        btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                color: #CBD5E0;
+                font-size: 11px;
+                font-style: italic;
+                text-align: left;
+                padding: 2px 0;
+            }
+            QPushButton:hover { color: #5DADE2; text-decoration: underline; }
+            QPushButton:focus { outline: none; }
+        """)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFlat(True)
+        btn.setToolTip("Roll initiative (1d20+mod); show in console. In combat mode also add to tracker.")
+
+        def _on_click():
+            mod = initiative_int or 0
+            expr = f"1d20+{mod}" if mod >= 0 else f"1d20{mod}"
+            roll_result = DiceRoller.roll(expr)
+            total = roll_result.total if roll_result else mod
+            # Always show roll result in console
+            mod_display = f"+{mod}" if mod >= 0 else str(mod)
+            message = f"<span style='color: #F4A460;'>{entity_name}</span> — Initiative: 1d20{mod_display} = <span style='color: #66BB6A;'>{total}</span>"
+            signal_hub.console_output.emit(message)
+            # In combat mode also add to tracker (pass result so we don't roll twice)
+            if getattr(self, "combat_mode", False) and getattr(self, "combat_tracker_widget", None):
+                data = {"type": "entity", "id": entity_id, "name": entity_name, "initiative": initiative_int, "result": total}
+                self.combat_tracker_widget.add_combatant(data)
+
+        btn.clicked.connect(_on_click)
+        return btn
+
     def create_property_widget(self, key: str, value: str) -> QWidget:
         """Create a widget to display a property."""
         widget = QWidget()
