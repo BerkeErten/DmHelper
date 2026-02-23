@@ -3,9 +3,9 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QScrollArea, QFrame, QSizePolicy, QGridLayout, QPushButton,
     QListWidget, QListWidgetItem, QDialog, QDialogButtonBox,
-    QMessageBox, QSplitter, QMenu, QLineEdit
+    QMessageBox, QSplitter, QMenu, QLineEdit, QStackedWidget
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent
 from PyQt6.QtGui import QTextDocument, QPainter, QColor, QBrush
 from core.database import DatabaseManager
 from core.dice_roller import DiceRoller
@@ -43,7 +43,11 @@ class CombatTrackerWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.combatants = []  # list of {"type": "entity"/"note", "id": "...", "name": "..."}
+        self.combatants = []  # list of combatant dicts, each with unique _tracker_id
+        self._next_tracker_id = 0
+        self._refreshing_list = False
+        self._current_turn_index = -1  # 0-based index in sorted order; -1 = not started
+        self._round_number = 1
         self._setup_ui()
 
     def _setup_ui(self):
@@ -56,6 +60,21 @@ class CombatTrackerWidget(QWidget):
         title.setStyleSheet("font-size: 13px; font-weight: bold; color: #E2E8F0;")
         header.addWidget(title)
         header.addStretch()
+
+        self.refresh_order_btn = QPushButton("Refresh")
+        self.refresh_order_btn.setToolTip("Re-sort turn order by initiative result")
+        self.refresh_order_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3c5c3c;
+                color: #E2E8F0;
+                padding: 4px 10px;
+                border-radius: 4px;
+                font-size: 11px;
+            }
+            QPushButton:hover { background-color: #4c6c4c; }
+        """)
+        self.refresh_order_btn.clicked.connect(self._refresh_list)
+        header.addWidget(self.refresh_order_btn)
 
         self.clear_tracker_btn = QPushButton("Clear")
         self.clear_tracker_btn.setStyleSheet("""
@@ -72,9 +91,45 @@ class CombatTrackerWidget(QWidget):
         header.addWidget(self.clear_tracker_btn)
         layout.addLayout(header)
 
+        turn_row = QHBoxLayout()
+        self.turn_label = QLabel("Round —  •  Turn: —")
+        self.turn_label.setStyleSheet("color: #CBD5E0; font-size: 11px; font-weight: bold;")
+        turn_row.addWidget(self.turn_label)
+        turn_row.addStretch()
+        self.start_turn_btn = QPushButton("Start turn")
+        self.start_turn_btn.setToolTip("Start from top of initiative order")
+        self.start_turn_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4c4c6c;
+                color: #E2E8F0;
+                padding: 3px 8px;
+                border-radius: 4px;
+                font-size: 10px;
+            }
+            QPushButton:hover { background-color: #5c5c7c; }
+        """)
+        self.start_turn_btn.clicked.connect(self._on_start_turn)
+        turn_row.addWidget(self.start_turn_btn)
+        self.next_turn_btn = QPushButton("Next turn")
+        self.next_turn_btn.setToolTip("Advance to next in order; at bottom wraps to top (new round)")
+        self.next_turn_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3c5c4c;
+                color: #E2E8F0;
+                padding: 3px 8px;
+                border-radius: 4px;
+                font-size: 10px;
+            }
+            QPushButton:hover { background-color: #4c6c5c; }
+        """)
+        self.next_turn_btn.clicked.connect(self._on_next_turn)
+        turn_row.addWidget(self.next_turn_btn)
+        layout.addLayout(turn_row)
+
         self.combatants_list = QListWidget()
         self.combatants_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.combatants_list.customContextMenuRequested.connect(self._show_context_menu)
+        self.combatants_list.currentRowChanged.connect(self._on_combatant_selection_changed)
         self.combatants_list.setStyleSheet("""
             QListWidget {
                 background-color: #2b2b2b;
@@ -87,60 +142,152 @@ class CombatTrackerWidget(QWidget):
             QListWidget::item:selected { background-color: #3d5a80; }
             QListWidget::item:hover { background-color: #3c3c3c; }
         """)
+        self.combatants_list.viewport().installEventFilter(self)
         layout.addWidget(self.combatants_list)
 
         self.setMinimumWidth(200)
 
+    def eventFilter(self, obj, event):
+        """When clicking empty space in the combat list, clear selection to hide HP/AC row."""
+        if obj is self.combatants_list.viewport() and event.type() == QEvent.Type.MouseButtonPress:
+            pt = event.position().toPoint()
+            index = self.combatants_list.indexAt(pt)
+            if index.row() < 0:
+                self.combatants_list.setCurrentRow(-1)
+                self._refresh_list()
+        return super().eventFilter(obj, event)
+
     def add_combatant(self, item: dict):
-        """Add a combatant; use item['result'] if provided, else roll 1d20+initiative. Allow duplicates (same entity → Name 2, Name 3, ...)."""
-        mod = item.get("initiative")
+        """Add a combatant (copy so each tracker entry is independent); assign unique _tracker_id. Allow duplicates (Name 2, Name 3, ...)."""
+        import copy
+        c = copy.deepcopy(item)
+        mod = c.get("initiative")
         if mod is None:
             mod = 0
-        if "result" not in item:
+        if "result" not in c:
             expr = f"1d20+{mod}" if mod >= 0 else f"1d20{mod}"
             roll_result = DiceRoller.roll(expr)
-            item["result"] = roll_result.total if roll_result else mod
-        # Index for same entity (1st, 2nd, 3rd...) so we can show "Goblin", "Goblin 2", "Goblin 3"
-        same_count = sum(1 for c in self.combatants if c.get("type") == item.get("type") and c.get("id") == item.get("id"))
-        item["display_index"] = same_count + 1
-        self.combatants.append(item)
+            c["result"] = roll_result.total if roll_result else mod
+        c["_tracker_id"] = self._next_tracker_id
+        self._next_tracker_id += 1
+        if c.get("hp_current") is None and c.get("hp_max") is not None:
+            c["hp_current"] = c["hp_max"]
+        if c.get("ac_current") is None and c.get("ac_base") is not None:
+            c["ac_current"] = c["ac_base"]
+        same_count = sum(1 for x in self.combatants if x.get("type") == c.get("type") and x.get("id") == c.get("id"))
+        c["display_index"] = same_count + 1
+        self.combatants.append(c)
         self._refresh_list()
 
+    def _on_start_turn(self):
+        """Start turn order from the top (first in initiative)."""
+        if not self.combatants:
+            return
+        self._current_turn_index = 0
+        self._round_number = 1
+        self._refresh_list()
+        self._update_turn_label()
+
+    def _on_next_turn(self):
+        """Advance to next in order; at bottom wrap to top and increment round."""
+        if not self.combatants:
+            return
+        if self._current_turn_index < 0:
+            self._current_turn_index = 0
+            self._round_number = 1
+        else:
+            self._current_turn_index += 1
+            if self._current_turn_index >= len(self.combatants):
+                self._current_turn_index = 0
+                self._round_number += 1
+        self._refresh_list()
+        self._update_turn_label()
+
+    def _update_turn_label(self):
+        if not self.combatants:
+            self.turn_label.setText("Round —  •  Turn: —")
+            return
+        if self._current_turn_index < 0:
+            self.turn_label.setText("Round —  •  Turn: —")
+            return
+        turn_1based = self._current_turn_index + 1
+        self.turn_label.setText(f"Round {self._round_number}  •  Turn: {turn_1based}")
+
     def _refresh_list(self):
-        """Display combatants sorted by initiative result descending. Same entity added again: Name 2, Name 3. (result) right. Conditions as colored dots."""
+        """Display combatants sorted by initiative result. Always show HP/AC row below selected combatant."""
+        self._refreshing_list = True
+        try:
+            self._refresh_list_impl()
+        finally:
+            self._refreshing_list = False
+
+    def _refresh_list_impl(self):
         def sort_key(c):
             res = c.get("result")
             if res is None:
                 res = -999
             return (-res, (c.get("name") or "Unknown").lower())
         self.combatants.sort(key=sort_key)
+        if self.combatants:
+            if self._current_turn_index >= len(self.combatants):
+                self._current_turn_index = len(self.combatants) - 1
+        else:
+            self._current_turn_index = -1
+        self._update_turn_label()
+        selected_tracker_id = None
+        cur = self.combatants_list.currentItem()
+        if cur is not None:
+            selected_tracker_id = cur.data(Qt.ItemDataRole.UserRole)
         self.combatants_list.clear()
+        row_to_select = -1
         for i, c in enumerate(self.combatants):
-            icon = "📦" if c.get("type") == "entity" else "📝"
+            tracker_id = c.get("_tracker_id")
             base_name = c.get("name", "Unknown")
             idx = c.get("display_index", 1)
             display_name = base_name if idx == 1 else f"{base_name} {idx}"
             result = c.get("result")
             conditions = c.get("conditions", [])
             list_item = QListWidgetItem()
+            list_item.setData(Qt.ItemDataRole.UserRole, tracker_id)
             list_item.setSizeHint(self._combatant_item_size())
             self.combatants_list.addItem(list_item)
-            row_widget = self._make_combatant_row_widget(f"{icon} {display_name}", result, conditions, i)
+            is_current_turn = (i == self._current_turn_index)
+            row_widget = self._make_combatant_row_widget(display_name, result, conditions, tracker_id, is_current_turn=is_current_turn)
             self.combatants_list.setItemWidget(list_item, row_widget)
+            if tracker_id == selected_tracker_id:
+                row_to_select = self.combatants_list.count() - 1
+
+            if selected_tracker_id is not None and tracker_id == selected_tracker_id:
+                attr_widget = self._make_attributes_row_widget(tracker_id)
+                attr_item = QListWidgetItem()
+                attr_item.setData(Qt.ItemDataRole.UserRole, tracker_id)
+                attr_item.setFlags(attr_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                attr_item.setSizeHint(attr_widget.sizeHint())
+                self.combatants_list.addItem(attr_item)
+                self.combatants_list.setItemWidget(attr_item, attr_widget)
+        if row_to_select >= 0:
+            self.combatants_list.setCurrentRow(row_to_select)
 
     def _combatant_item_size(self):
         """Return a fixed size for each combatant row so setItemWidget looks correct."""
         from PyQt6.QtCore import QSize
         return QSize(200, 28)
 
-    def _make_condition_dot(self, condition_name: str, combatant_index: int) -> QWidget:
+    def _index_by_tracker_id(self, tracker_id) -> int:
+        """Return index of combatant with this _tracker_id, or -1."""
+        for i, c in enumerate(self.combatants):
+            if c.get("_tracker_id") == tracker_id:
+                return i
+        return -1
+
+    def _make_condition_dot(self, condition_name: str, tracker_id) -> QWidget:
         """Small colored circle for a condition; click removes it."""
         condition_lower = condition_name.lower().strip()
         base_color = CONDITION_COLORS.get(condition_lower, "#888888")
         parent = self
 
         class ConditionDot(QWidget):
-            def __init__(self, color_hex: str, tooltip_text: str, cond_name: str, idx: int):
+            def __init__(self, color_hex: str, tooltip_text: str, cond_name: str, tid):
                 super().__init__()
                 self.setFixedSize(12, 12)
                 self.setToolTip(f"{tooltip_text}\n(Click to remove)")
@@ -155,7 +302,7 @@ class CombatTrackerWidget(QWidget):
                 )
                 self._current = self._color
                 self._cond_name = cond_name
-                self._idx = idx
+                self._tracker_id = tid
 
             def enterEvent(self, event):
                 self._current = self._hover
@@ -169,7 +316,7 @@ class CombatTrackerWidget(QWidget):
 
             def mousePressEvent(self, event):
                 if event.button() == Qt.MouseButton.LeftButton:
-                    parent.remove_condition_from_combatant(self._idx, self._cond_name)
+                    parent.remove_condition_from_combatant_by_tracker_id(self._tracker_id, self._cond_name)
                 super().mousePressEvent(event)
 
             def paintEvent(self, event):
@@ -183,25 +330,88 @@ class CombatTrackerWidget(QWidget):
                 painter.drawEllipse(x, y, s, s)
                 painter.end()
 
-        return ConditionDot(base_color, condition_name, condition_name, combatant_index)
+        return ConditionDot(base_color, condition_name, condition_name, tracker_id)
 
-    def _make_combatant_row_widget(self, name_text: str, result: int | None, conditions: list, combatant_index: int) -> QWidget:
-        """Row: name on left, condition dots, stretch, (result) on right."""
+    def _make_editable_combatant_cell(self, initial_text: str, tracker_id, field: str, display_text: str = None) -> QWidget:
+        """Widget that shows text; double-click to edit. On commit updates combatant identified by tracker_id."""
+        parent = self
+        if display_text is None:
+            display_text = initial_text
+        style_label = "color: #E2E8F0; font-size: 11px;"
+        if field == "result":
+            style_label = "color: #CBD5E0; font-size: 11px; font-weight: bold;"
+        style_edit = """
+            QLineEdit {
+                background-color: #3c3c3c;
+                color: #E2E8F0;
+                padding: 2px 4px;
+                border: 1px solid #5DADE2;
+                border-radius: 3px;
+                font-size: 11px;
+            }
+        """
+        stack = QStackedWidget()
+        label = QLabel(display_text)
+        label.setStyleSheet(style_label)
+        label.setWordWrap(False)
+        label.setCursor(Qt.CursorShape.IBeamCursor)
+        if field == "result":
+            label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        edit = QLineEdit()
+        edit.setStyleSheet(style_edit)
+        edit.setMaximumWidth(120 if field == "name" else 50)
+        if field == "result":
+            edit.setAlignment(Qt.AlignmentFlag.AlignRight)
+        stack.addWidget(label)
+        stack.addWidget(edit)
+
+        def start_edit():
+            edit.setText(initial_text)
+            edit.selectAll()
+            stack.setCurrentWidget(edit)
+            edit.setFocus(Qt.FocusReason.MouseFocusReason)
+
+        def commit():
+            text = edit.text().strip()
+            stack.setCurrentWidget(label)
+            idx = parent._index_by_tracker_id(tracker_id)
+            if idx < 0:
+                return
+            c = parent.combatants[idx]
+            if field == "name":
+                if text:
+                    c["name"] = text
+            else:
+                try:
+                    c["result"] = int(text)
+                except (ValueError, TypeError):
+                    pass
+            parent._refresh_list()
+
+        label.mouseDoubleClickEvent = lambda e: start_edit()
+        edit.editingFinished.connect(commit)
+        edit.returnPressed.connect(commit)
+        return stack
+
+    def _make_combatant_row_widget(self, name_text: str, result: int | None, conditions: list, tracker_id, is_current_turn: bool = False) -> QWidget:
+        """Row: editable name, condition dots, stretch, editable (result) on right. tracker_id identifies this combatant. When is_current_turn, draw red border around this row only (not name/initiative cells)."""
         row = QWidget()
+        if is_current_turn:
+            row.setObjectName("currentTurnRow")
+            row.setStyleSheet("#currentTurnRow { border: 2px solid #c53030; border-radius: 4px; background-color: transparent; }")
+            row.setMinimumHeight(24)
         layout = QHBoxLayout(row)
         layout.setContentsMargins(6, 2, 6, 2)
         layout.setSpacing(4)
-        left = QLabel(name_text)
-        left.setStyleSheet("color: #E2E8F0; font-size: 11px;")
-        left.setWordWrap(False)
-        layout.addWidget(left)
+        name_cell = self._make_editable_combatant_cell(name_text, tracker_id, "name")
+        layout.addWidget(name_cell)
         for cond in conditions:
-            layout.addWidget(self._make_condition_dot(cond, combatant_index))
+            layout.addWidget(self._make_condition_dot(cond, tracker_id))
         layout.addStretch()
         if result is not None:
-            right = QLabel(f"({result})")
-            right.setStyleSheet("color: #CBD5E0; font-size: 11px; font-weight: bold;")
-            layout.addWidget(right)
+            result_cell = self._make_editable_combatant_cell(str(result), tracker_id, "result", display_text=f"({result})")
+            result_cell.setMinimumWidth(44)
+            layout.addWidget(result_cell)
         return row
 
     def add_condition_to_combatant(self, combatant_index: int, condition_name: str):
@@ -222,6 +432,12 @@ class CombatTrackerWidget(QWidget):
         self.combatants[combatant_index]["conditions"] = [c for c in cond_list if c.lower() != condition_lower]
         self._refresh_list()
 
+    def remove_condition_from_combatant_by_tracker_id(self, tracker_id, condition_name: str):
+        """Remove a condition from the combatant with this _tracker_id and refresh."""
+        idx = self._index_by_tracker_id(tracker_id)
+        if idx >= 0:
+            self.remove_condition_from_combatant(idx, condition_name)
+
     def _clear_combatants(self):
         if self.combatants:
             reply = QMessageBox.question(
@@ -231,23 +447,28 @@ class CombatTrackerWidget(QWidget):
             )
             if reply == QMessageBox.StandardButton.Yes:
                 self.combatants.clear()
+                self._current_turn_index = -1
+                self._round_number = 1
                 self._refresh_list()
 
     def _show_context_menu(self, pos):
         item = self.combatants_list.itemAt(pos)
         if not item:
             return
-        row = self.combatants_list.row(item)
-        if row < 0 or row >= len(self.combatants):
+        tracker_id = item.data(Qt.ItemDataRole.UserRole)
+        if tracker_id is None:
+            return
+        combatant_index = self._index_by_tracker_id(tracker_id)
+        if combatant_index < 0:
             return
         menu = QMenu(self)
         add_cond_act = menu.addAction("➕ Add Condition")
         remove_act = menu.addAction("Remove from tracker")
         action = menu.exec(self.combatants_list.mapToGlobal(pos))
         if action == add_cond_act:
-            self._show_add_condition_dialog(row)
+            self._show_add_condition_dialog(combatant_index)
         elif action == remove_act:
-            self.combatants.pop(row)
+            self.combatants.pop(combatant_index)
             self._refresh_list()
 
     def _show_add_condition_dialog(self, combatant_index: int):
@@ -300,6 +521,123 @@ class CombatTrackerWidget(QWidget):
                 name = known[combo.currentIndex()]
             if name:
                 self.add_condition_to_combatant(combatant_index, name)
+
+    def _on_combatant_selection_changed(self, _row: int):
+        """Rebuild list so HP/AC row appears below the newly selected combatant."""
+        if self._refreshing_list:
+            return
+        self._refresh_list()
+
+    _HP_AC_CELL_SIZE = 24  # square side in px
+
+    def _make_attributes_editable_cell(self, value, tracker_id: int, field: str) -> QWidget:
+        """Small square editable cell for HP/AC: double-click to edit; commit updates combatant and refreshes list."""
+        parent = self
+        size = self._HP_AC_CELL_SIZE
+        display = str(value) if value is not None and value != "" else "—"
+        stack = QStackedWidget()
+        label = QLabel(display)
+        label.setStyleSheet("color: #E2E8F0; font-size: 8px;")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setCursor(Qt.CursorShape.IBeamCursor)
+        edit = QLineEdit()
+        edit.setStyleSheet("""
+            QLineEdit {
+                background-color: #3c3c3c;
+                color: #E2E8F0;
+                padding: 0 2px;
+                border: 1px solid #5DADE2;
+                border-radius: 2px;
+                font-size: 8px;
+            }
+        """)
+        edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        edit.setMaxLength(4)
+        stack.addWidget(label)
+        stack.addWidget(edit)
+        stack.setFixedSize(size, size)
+
+        def start_edit():
+            edit.setText(display)
+            edit.selectAll()
+            stack.setCurrentWidget(edit)
+            edit.setFocus(Qt.FocusReason.MouseFocusReason)
+
+        def commit():
+            text = edit.text().strip()
+            stack.setCurrentWidget(label)
+            idx = parent._index_by_tracker_id(tracker_id)
+            if idx < 0:
+                return
+            c = parent.combatants[idx]
+            try:
+                if field in ("hp_current", "hp_max", "ac_current", "ac_base"):
+                    c[field] = int(text) if text else None
+            except (ValueError, TypeError):
+                pass
+            parent._refresh_list()
+
+        label.mouseDoubleClickEvent = lambda e: start_edit()
+        edit.editingFinished.connect(commit)
+        edit.returnPressed.connect(commit)
+        return stack
+
+    def _make_attributes_row_widget(self, tracker_id: int) -> QWidget:
+        """Build HP/AC block below selected combatant: vertical list, small square inputs."""
+        idx = self._index_by_tracker_id(tracker_id)
+        if idx < 0:
+            return QWidget()
+        c = self.combatants[idx]
+        hp_cur = c.get("hp_current")
+        hp_max = c.get("hp_max")
+        ac_cur = c.get("ac_current")
+        ac_base = c.get("ac_base")
+        label_style = "color: #CBD5E0; font-size: 8px;"
+        frame = QFrame()
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: #252530;
+                border: 1px solid #4c4c4c;
+                border-radius: 3px;
+                padding: 2px;
+            }
+        """)
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(4, 3, 4, 3)
+        layout.setSpacing(2)
+        # HP row: label + [cur] / [max]
+        hp_row = QHBoxLayout()
+        hp_row.setSpacing(2)
+        hp_l = QLabel("HP:")
+        hp_l.setStyleSheet(label_style)
+        hp_l.setFixedWidth(18)
+        hp_row.addWidget(hp_l)
+        hp_row.addWidget(self._make_attributes_editable_cell(hp_cur, tracker_id, "hp_current"))
+        sep1 = QLabel("/")
+        sep1.setStyleSheet(label_style)
+        hp_row.addWidget(sep1)
+        hp_row.addWidget(self._make_attributes_editable_cell(hp_max, tracker_id, "hp_max"))
+        hp_row.addStretch()
+        hp_w = QWidget()
+        hp_w.setLayout(hp_row)
+        layout.addWidget(hp_w)
+        # AC row: label + [cur] / [base]
+        ac_row = QHBoxLayout()
+        ac_row.setSpacing(2)
+        ac_l = QLabel("AC:")
+        ac_l.setStyleSheet(label_style)
+        ac_l.setFixedWidth(18)
+        ac_row.addWidget(ac_l)
+        ac_row.addWidget(self._make_attributes_editable_cell(ac_cur, tracker_id, "ac_current"))
+        sep2 = QLabel("/")
+        sep2.setStyleSheet(label_style)
+        ac_row.addWidget(sep2)
+        ac_row.addWidget(self._make_attributes_editable_cell(ac_base, tracker_id, "ac_base"))
+        ac_row.addStretch()
+        ac_w = QWidget()
+        ac_w.setLayout(ac_row)
+        layout.addWidget(ac_w)
+        return frame
 
 
 class StatBlockViewerWidget(QWidget):
@@ -1243,13 +1581,90 @@ class StatBlockViewerWidget(QWidget):
             import traceback
             traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Failed to remove condition: {str(e)}")
-    
+
+    def get_entity_hp_and_ac(self, entity_id: str):
+        """Load entity by id and return (hp_max, ac_base) from statblock. hp/ac may be '26 (4d8+8)' or '15 (natural armor)' - first number is used."""
+        try:
+            with DatabaseManager() as db:
+                from sqlalchemy.orm import joinedload
+                entity = db.query(Entity).options(
+                    joinedload(Entity.properties)
+                ).filter(Entity.id == entity_id).first()
+                if not entity:
+                    return None, None
+                props_dict = {p.key: p.value for p in (entity.properties or [])}
+                hp_max = None
+                ac_base = None
+                hp_raw = (props_dict.get("hp") or "").strip()
+                if hp_raw:
+                    m = re.match(r"(\d+)", hp_raw)
+                    if m:
+                        hp_max = int(m.group(1))
+                ac_raw = (props_dict.get("ac") or "").strip()
+                if ac_raw:
+                    m = re.match(r"(\d+)", ac_raw)
+                    if m:
+                        ac_base = int(m.group(1))
+                return hp_max, ac_base
+        except Exception as e:
+            print(f"Error getting entity hp/ac: {e}")
+        return None, None
+
+    def get_entity_initiative_modifier(self, entity_id: str) -> int:
+        """Load entity by id and return initiative modifier (from property or computed from DEX). Returns 0 if not found."""
+        try:
+            with DatabaseManager() as db:
+                from sqlalchemy.orm import joinedload
+                entity = db.query(Entity).options(
+                    joinedload(Entity.properties)
+                ).filter(Entity.id == entity_id).first()
+                if not entity:
+                    return 0
+                props_dict = {p.key: p.value for p in (entity.properties or [])}
+                # Explicit initiative property
+                init_val = props_dict.get("initiative", "").strip()
+                if init_val:
+                    parsed = self._parse_initiative_to_int(init_val)
+                    if parsed is not None:
+                        return parsed
+                # Compute from DEX
+                dex_raw = props_dict.get("dex", "").strip()
+                if dex_raw:
+                    score_str, _ = self.parse_ability_score(dex_raw)
+                    if score_str:
+                        dex_int = int(score_str)
+                        prof = self.get_proficiency_bonus(entity)
+                        return calculate_initiative_from_ability_score(dex_int, prof, 0)
+        except Exception as e:
+            print(f"Error getting entity initiative: {e}")
+        return 0
+
     def on_item_double_clicked(self, item: QListWidgetItem):
-        """In combat mode: add item to combat tracker. Otherwise: prompt to remove from list."""
+        """In combat mode: add item to combat tracker (roll initiative, show in console). Otherwise: prompt to remove from list."""
         data = item.data(Qt.ItemDataRole.UserRole)
         if not data:
             return
         if self.combat_mode and self.combat_tracker_widget:
+            mod = 0
+            if data.get("type") == "entity":
+                mod = self.get_entity_initiative_modifier(data["id"])
+            expr = f"1d20+{mod}" if mod >= 0 else f"1d20{mod}"
+            roll_result = DiceRoller.roll(expr)
+            total = roll_result.total if roll_result else mod
+            mod_display = f"+{mod}" if mod >= 0 else str(mod)
+            message = f"<span style='color: #F4A460;'>{data.get('name', 'Unknown')}</span> — Initiative: 1d20{mod_display} = <span style='color: #66BB6A;'>{total}</span>"
+            signal_hub.console_output.emit(message)
+            data = dict(data)
+            data["initiative"] = mod
+            data["result"] = total
+            if data.get("type") == "entity":
+                hp_max, ac_base = self.get_entity_hp_and_ac(data["id"])
+                if hp_max is not None:
+                    data["hp_max"] = hp_max
+                    data["hp_current"] = hp_max
+                if ac_base is not None:
+                    data["ac_base"] = ac_base
+                    data["ac_current"] = ac_base
             self.combat_tracker_widget.add_combatant(data)
             return
         reply = QMessageBox.question(
@@ -1662,6 +2077,13 @@ class StatBlockViewerWidget(QWidget):
             # In combat mode also add to tracker (pass result so we don't roll twice)
             if getattr(self, "combat_mode", False) and getattr(self, "combat_tracker_widget", None):
                 data = {"type": "entity", "id": entity_id, "name": entity_name, "initiative": initiative_int, "result": total}
+                hp_max, ac_base = self.get_entity_hp_and_ac(entity_id)
+                if hp_max is not None:
+                    data["hp_max"] = hp_max
+                    data["hp_current"] = hp_max
+                if ac_base is not None:
+                    data["ac_base"] = ac_base
+                    data["ac_current"] = ac_base
                 self.combat_tracker_widget.add_combatant(data)
 
         btn.clicked.connect(_on_click)

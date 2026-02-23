@@ -33,6 +33,7 @@ class SignalHub(QObject):
     # Stat block editor signals
     stat_block_open_requested = pyqtSignal(str)
     
+    
     # Stat block viewer signals
     add_to_stat_block_list = pyqtSignal(dict)  # item_data: {"type": "entity"/"note", "id": "...", "name": "..."}  # entity_id - request to open stat block editor
     

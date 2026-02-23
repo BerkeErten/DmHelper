@@ -1,8 +1,9 @@
 """Data manager widget for organizing entities."""
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem, 
+    QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
     QLabel, QPushButton, QHBoxLayout, QLineEdit,
-    QTreeWidgetItemIterator
+    QTreeWidgetItemIterator, QSizePolicy, QHeaderView,
+    QStyle, QApplication,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QDropEvent
@@ -111,11 +112,36 @@ class DataManagerWidget(QWidget):
         header_label = QLabel("Data Manager")
         header_label.setStyleSheet("font-weight: bold; font-size: 12px;")
         header_layout.addWidget(header_label)
+        header_layout.addStretch()
         
-        self.add_btn = QPushButton("+")
-        self.add_btn.setMaximumWidth(30)
-        self.add_btn.setToolTip("Add new entity")
-        header_layout.addWidget(self.add_btn)
+        # Action buttons (icon-only) at top
+        style = QApplication.style()
+        self.add_page_btn = QPushButton()
+        self.add_page_btn.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_FileIcon))
+        self.add_page_btn.setToolTip("Add new page")
+        self.add_page_btn.setFixedSize(28, 28)
+        header_layout.addWidget(self.add_page_btn)
+        
+        self.edit_page_btn = QPushButton()
+        self.edit_page_btn.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
+        self.edit_page_btn.setToolTip("Edit page")
+        self.edit_page_btn.setFixedSize(28, 28)
+        self.edit_page_btn.setEnabled(False)
+        header_layout.addWidget(self.edit_page_btn)
+        
+        self.add_to_viewer_btn = QPushButton()
+        self.add_to_viewer_btn.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward))
+        self.add_to_viewer_btn.setToolTip("Add to StatBlock Viewer")
+        self.add_to_viewer_btn.setFixedSize(28, 28)
+        self.add_to_viewer_btn.setEnabled(False)
+        header_layout.addWidget(self.add_to_viewer_btn)
+        
+        self.delete_item_btn = QPushButton()
+        self.delete_item_btn.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        self.delete_item_btn.setToolTip("Delete item")
+        self.delete_item_btn.setFixedSize(28, 28)
+        self.delete_item_btn.setEnabled(False)
+        header_layout.addWidget(self.delete_item_btn)
         
         layout.addLayout(header_layout)
         
@@ -128,25 +154,14 @@ class DataManagerWidget(QWidget):
         self.tree_widget = CategoryTreeWidget()
         self.tree_widget.setParentManager(self)
         self.tree_widget.setHeaderHidden(True)
+        self.tree_widget.setColumnCount(1)
+        self.tree_widget.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.tree_widget.setDragEnabled(True)
         self.tree_widget.setDropIndicatorShown(True)
         self.tree_widget.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
         self.tree_widget.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.tree_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         layout.addWidget(self.tree_widget)
-        
-        # Action buttons
-        button_layout = QHBoxLayout()
-        
-        self.edit_btn = QPushButton("Edit")
-        self.edit_btn.setEnabled(False)
-        button_layout.addWidget(self.edit_btn)
-        
-        self.delete_btn = QPushButton("Delete")
-        self.delete_btn.setEnabled(False)
-        button_layout.addWidget(self.delete_btn)
-        
-        layout.addLayout(button_layout)
         
         # Set minimum width
         self.setMinimumWidth(250)
@@ -157,9 +172,10 @@ class DataManagerWidget(QWidget):
         self.tree_widget.itemDoubleClicked.connect(self.on_item_double_clicked)
         self.tree_widget.customContextMenuRequested.connect(self.show_context_menu)
         self.search_box.textChanged.connect(self.on_search_changed)
-        self.add_btn.clicked.connect(self.add_entity)
-        self.edit_btn.clicked.connect(self.edit_selected_entity)
-        self.delete_btn.clicked.connect(self.delete_selected_entity)
+        self.add_page_btn.clicked.connect(self.add_entity)
+        self.edit_page_btn.clicked.connect(self.edit_selected_entity)
+        self.add_to_viewer_btn.clicked.connect(self.add_selected_to_statblock_viewer)
+        self.delete_item_btn.clicked.connect(self.delete_selected_entity)
         # Listen for note saves to refresh the notes list
         signal_hub.note_saved.connect(self.on_note_saved)
         # Listen for entity saves to refresh the entities list
@@ -194,10 +210,9 @@ class DataManagerWidget(QWidget):
                     # Load notes
                     for note_row in notes_data:
                         note_id, note_title = note_row
-                        # Create tree item for note
                         note_item = QTreeWidgetItem(notes_category, [note_title])
-                        # Store note ID in UserRole for opening later
-                        note_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "note", "id": note_id, "title": note_title})
+                        note_data = {"type": "note", "id": note_id, "title": note_title}
+                        note_item.setData(0, Qt.ItemDataRole.UserRole, note_data)
                     
                 print(f"✓ Loaded {len(notes_data)} notes into Data Manager")
                     
@@ -249,11 +264,12 @@ class DataManagerWidget(QWidget):
                     # Add entities
                     for entity in entity_list:
                         entity_item = QTreeWidgetItem(category_item, [entity.name])
-                        entity_item.setData(0, Qt.ItemDataRole.UserRole, {
+                        entity_data = {
                             "type": "entity",
                             "id": entity.id,
                             "name": entity.name
-                        })
+                        }
+                        entity_item.setData(0, Qt.ItemDataRole.UserRole, entity_data)
                     
                     category_item.setExpanded(True)
                 
@@ -297,8 +313,9 @@ class DataManagerWidget(QWidget):
         # Disable buttons for default message item (non-selectable items)
         is_default_message = not (item.flags() & Qt.ItemFlag.ItemIsSelectable)
         
-        self.edit_btn.setEnabled(is_child and not is_default_message)
-        self.delete_btn.setEnabled(is_child and not is_default_message)
+        self.edit_page_btn.setEnabled(is_child and not is_default_message)
+        self.add_to_viewer_btn.setEnabled(is_child and not is_default_message)
+        self.delete_item_btn.setEnabled(is_child and not is_default_message)
         
         # Emit signal for data selection (skip default message)
         if is_child and not is_default_message:
@@ -611,10 +628,32 @@ class DataManagerWidget(QWidget):
             signal_hub.data_saved.emit(entity_type, data)
             
     def edit_selected_entity(self):
-        """Edit the currently selected entity."""
+        """Edit the currently selected entity or open the selected note."""
         item = self.tree_widget.currentItem()
-        if item and item.parent():
+        if not item or not item.parent():
+            return
+        if not (item.flags() & Qt.ItemFlag.ItemIsSelectable):
+            return
+        item_data = item.data(0, Qt.ItemDataRole.UserRole)
+        if item_data and item_data.get("type") == "note":
+            self.open_note(item)
+        else:
             self.edit_entity(item)
+
+    def add_selected_to_statblock_viewer(self):
+        """Add the currently selected item to the StatBlock Viewer list."""
+        item = self.tree_widget.currentItem()
+        if not item or not item.parent():
+            return
+        if not (item.flags() & Qt.ItemFlag.ItemIsSelectable):
+            return
+        item_data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not item_data or item_data.get("type") not in ("entity", "note"):
+            return
+        payload = dict(item_data)
+        if payload.get("type") == "note" and "name" not in payload:
+            payload["name"] = payload.get("title", "")
+        self.add_entity_to_stat_block_list(payload)
             
     def edit_entity(self, item: QTreeWidgetItem):
         """Edit an entity."""
@@ -724,8 +763,9 @@ class DataManagerWidget(QWidget):
                             root.removeChild(parent)
                     
                     # Clear selection and disable buttons
-                    self.edit_btn.setEnabled(False)
-                    self.delete_btn.setEnabled(False)
+                    self.edit_page_btn.setEnabled(False)
+                    self.add_to_viewer_btn.setEnabled(False)
+                    self.delete_item_btn.setEnabled(False)
                     
                     # Refresh the notes list to reflect the deletion
                     self.load_notes_from_database()
@@ -790,8 +830,9 @@ class DataManagerWidget(QWidget):
                 parent.removeChild(item)
             
             # Clear selection and disable buttons
-            self.edit_btn.setEnabled(False)
-            self.delete_btn.setEnabled(False)
+            self.edit_page_btn.setEnabled(False)
+            self.add_to_viewer_btn.setEnabled(False)
+            self.delete_item_btn.setEnabled(False)
             
             # Refresh entities from database to reflect deletion
             self.load_entities_from_database()
