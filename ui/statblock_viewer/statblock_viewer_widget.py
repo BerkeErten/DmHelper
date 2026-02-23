@@ -1,11 +1,11 @@
 """StatBlock Viewer Widget - Custom list viewer for entities, notes, and more."""
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QScrollArea, QFrame, QSizePolicy, QGridLayout, QPushButton,
     QListWidget, QListWidgetItem, QDialog, QDialogButtonBox,
     QMessageBox, QSplitter, QMenu, QLineEdit, QStackedWidget
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QEvent
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QTimer
 from PyQt6.QtGui import QTextDocument, QPainter, QColor, QBrush
 from core.database import DatabaseManager
 from core.dice_roller import DiceRoller
@@ -804,6 +804,7 @@ class StatBlockViewerWidget(QWidget):
                 background-color: #2b2b2b;
             }
         """)
+        self.display_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         
         # Display widget for all items
         self.display_widget = QWidget()
@@ -906,18 +907,35 @@ class StatBlockViewerWidget(QWidget):
     def add_item_to_list(self, item: dict):
         """Add an item to the custom list."""
         # Check if already in list
+        prevfocus = QApplication.focusWidget()
+        
         for existing_item in self.custom_list:
             if existing_item["type"] == item["type"] and existing_item["id"] == item["id"]:
                 QMessageBox.information(self, "Already Added", f"{item['name']} is already in the list.")
                 return
         
+        # Remember currently displayed item so we can restore selection after refresh
+        selected = self.items_list.selectedItems()
+        prev_item = selected[0].data(Qt.ItemDataRole.UserRole) if selected else None
+        prev_key = (prev_item["type"], prev_item["id"]) if prev_item else None
+
         self.custom_list.append(item)
         self.refresh_items_list()
-        # Auto-select the newly added item
-        last_index = self.items_list.count() - 1
-        if last_index >= 0:
-            self.items_list.setCurrentRow(last_index)
+
+        # Restore selection to the previously displayed item so display doesn't reset
+        if prev_key:
+            for i in range(self.items_list.count()):
+                list_item = self.items_list.item(i)
+                data = list_item.data(Qt.ItemDataRole.UserRole)
+                if data and (data.get("type"), data.get("id")) == prev_key:
+                    self.items_list.setCurrentRow(i)
+                    break
+
         self.refresh_display()
+        # Defer focus restore so it runs after Qt's layout/focus; prevents dock flash
+        if prevfocus and prevfocus.isVisible():
+            w = prevfocus
+            QTimer.singleShot(0, lambda w=w: w.setFocus() if (w and w.isVisible()) else None)
     
     def remove_item_from_list(self, index: int):
         """Remove an item from the custom list."""
