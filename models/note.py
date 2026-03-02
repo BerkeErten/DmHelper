@@ -47,6 +47,7 @@ class Note(Base):
     tags = relationship("Tag", secondary=note_tags, back_populates="notes")
     outgoing_relations = relationship("Relation", foreign_keys="Relation.from_note_id", back_populates="from_note", cascade="all, delete-orphan")
     incoming_relations = relationship("Relation", foreign_keys="Relation.to_note_id", back_populates="to_note", cascade="all, delete-orphan")
+    entity_note_links = relationship("EntityNoteLink", back_populates="note", cascade="all, delete-orphan")
     metadata_items = relationship("NoteMetadata", back_populates="note", cascade="all, delete-orphan")
     
     def __repr__(self):

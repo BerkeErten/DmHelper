@@ -52,6 +52,13 @@ class MainWindow(QMainWindow):
         
         file_menu.addSeparator()
         
+        settings_action = QAction("&Settings", self)
+        settings_action.setShortcut("Ctrl+,")
+        settings_action.triggered.connect(self.open_settings)
+        file_menu.addAction(settings_action)
+        
+        file_menu.addSeparator()
+        
         exit_action = QAction("E&xit", self)
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(self.close)
@@ -335,6 +342,11 @@ class MainWindow(QMainWindow):
         from ui.dialogs.dice_roller_dialog import DiceRollerDialog
         dialog = DiceRollerDialog(self)
         dialog.exec()
+
+    def open_settings(self):
+        """Open the settings dialog."""
+        from ui.settings.settings import open_settings_dialog
+        open_settings_dialog(self)
 
     def open_knowledge_base(self):
         """Open or show the Knowledge Base window."""

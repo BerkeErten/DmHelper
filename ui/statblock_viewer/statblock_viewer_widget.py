@@ -11,6 +11,7 @@ from core.database import DatabaseManager
 from core.dice_roller import DiceRoller
 from core.dnd_utils import proficiency_bonus_from_cr, calculate_initiative_from_ability_score
 from core.events import signal_hub
+from core.settings import get_combat_tracker_property_keys
 from models.entity import Entity
 from models.note import Note
 import json
@@ -552,7 +553,7 @@ class CombatTrackerWidget(QWidget):
             }
         """)
         edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        edit.setMaxLength(4)
+        edit.setMaxLength(8 if field not in ("hp_current", "hp_max", "ac_current", "ac_base") else 4)
         stack.addWidget(label)
         stack.addWidget(edit)
         stack.setFixedSize(size, size)
@@ -573,6 +574,8 @@ class CombatTrackerWidget(QWidget):
             try:
                 if field in ("hp_current", "hp_max", "ac_current", "ac_base"):
                     c[field] = int(text) if text else None
+                else:
+                    c[field] = int(text) if (text and text.isdigit()) else (text or None)
             except (ValueError, TypeError):
                 pass
             parent._refresh_list()
@@ -583,15 +586,12 @@ class CombatTrackerWidget(QWidget):
         return stack
 
     def _make_attributes_row_widget(self, tracker_id: int) -> QWidget:
-        """Build HP/AC block below selected combatant: vertical list, small square inputs."""
+        """Build attributes block below selected combatant from settings keys; only shows keys that combatant has."""
         idx = self._index_by_tracker_id(tracker_id)
         if idx < 0:
             return QWidget()
         c = self.combatants[idx]
-        hp_cur = c.get("hp_current")
-        hp_max = c.get("hp_max")
-        ac_cur = c.get("ac_current")
-        ac_base = c.get("ac_base")
+        shown_keys = get_combat_tracker_property_keys()
         label_style = "color: #CBD5E0; font-size: 8px;"
         frame = QFrame()
         frame.setStyleSheet("""
@@ -605,38 +605,52 @@ class CombatTrackerWidget(QWidget):
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(4, 3, 4, 3)
         layout.setSpacing(2)
-        # HP row: label + [cur] / [max]
-        hp_row = QHBoxLayout()
-        hp_row.setSpacing(2)
-        hp_l = QLabel("HP:")
-        hp_l.setStyleSheet(label_style)
-        hp_l.setFixedWidth(18)
-        hp_row.addWidget(hp_l)
-        hp_row.addWidget(self._make_attributes_editable_cell(hp_cur, tracker_id, "hp_current"))
-        sep1 = QLabel("/")
-        sep1.setStyleSheet(label_style)
-        hp_row.addWidget(sep1)
-        hp_row.addWidget(self._make_attributes_editable_cell(hp_max, tracker_id, "hp_max"))
-        hp_row.addStretch()
-        hp_w = QWidget()
-        hp_w.setLayout(hp_row)
-        layout.addWidget(hp_w)
-        # AC row: label + [cur] / [base]
-        ac_row = QHBoxLayout()
-        ac_row.setSpacing(2)
-        ac_l = QLabel("AC:")
-        ac_l.setStyleSheet(label_style)
-        ac_l.setFixedWidth(18)
-        ac_row.addWidget(ac_l)
-        ac_row.addWidget(self._make_attributes_editable_cell(ac_cur, tracker_id, "ac_current"))
-        sep2 = QLabel("/")
-        sep2.setStyleSheet(label_style)
-        ac_row.addWidget(sep2)
-        ac_row.addWidget(self._make_attributes_editable_cell(ac_base, tracker_id, "ac_base"))
-        ac_row.addStretch()
-        ac_w = QWidget()
-        ac_w.setLayout(ac_row)
-        layout.addWidget(ac_w)
+        for key in shown_keys:
+            key_lower = key.lower()
+            if key_lower == "hp" and (c.get("hp_current") is not None or c.get("hp_max") is not None):
+                hp_row = QHBoxLayout()
+                hp_row.setSpacing(2)
+                hp_l = QLabel("HP:")
+                hp_l.setStyleSheet(label_style)
+                hp_l.setFixedWidth(18)
+                hp_row.addWidget(hp_l)
+                hp_row.addWidget(self._make_attributes_editable_cell(c.get("hp_current"), tracker_id, "hp_current"))
+                sep1 = QLabel("/")
+                sep1.setStyleSheet(label_style)
+                hp_row.addWidget(sep1)
+                hp_row.addWidget(self._make_attributes_editable_cell(c.get("hp_max"), tracker_id, "hp_max"))
+                hp_row.addStretch()
+                hp_w = QWidget()
+                hp_w.setLayout(hp_row)
+                layout.addWidget(hp_w)
+            elif key_lower == "ac" and (c.get("ac_current") is not None or c.get("ac_base") is not None):
+                ac_row = QHBoxLayout()
+                ac_row.setSpacing(2)
+                ac_l = QLabel("AC:")
+                ac_l.setStyleSheet(label_style)
+                ac_l.setFixedWidth(18)
+                ac_row.addWidget(ac_l)
+                ac_row.addWidget(self._make_attributes_editable_cell(c.get("ac_current"), tracker_id, "ac_current"))
+                sep2 = QLabel("/")
+                sep2.setStyleSheet(label_style)
+                ac_row.addWidget(sep2)
+                ac_row.addWidget(self._make_attributes_editable_cell(c.get("ac_base"), tracker_id, "ac_base"))
+                ac_row.addStretch()
+                ac_w = QWidget()
+                ac_w.setLayout(ac_row)
+                layout.addWidget(ac_w)
+            elif c.get(key_lower) is not None:
+                row = QHBoxLayout()
+                row.setSpacing(2)
+                lbl = QLabel(f"{key_lower.title()}:")
+                lbl.setStyleSheet(label_style)
+                lbl.setFixedWidth(18)
+                row.addWidget(lbl)
+                row.addWidget(self._make_attributes_editable_cell(c.get(key_lower), tracker_id, key_lower))
+                row.addStretch()
+                row_w = QWidget()
+                row_w.setLayout(row)
+                layout.addWidget(row_w)
         return frame
 
 
@@ -1628,6 +1642,45 @@ class StatBlockViewerWidget(QWidget):
             print(f"Error getting entity hp/ac: {e}")
         return None, None
 
+    def get_entity_combat_tracker_props(self, entity_id: str) -> dict:
+        """Load entity and return dict of combat-tracker props for keys in settings (hp, ac, luck, doom, etc.). Only includes keys that are in settings list and present on the entity."""
+        shown_keys = get_combat_tracker_property_keys()
+        try:
+            with DatabaseManager() as db:
+                from sqlalchemy.orm import joinedload
+                entity = db.query(Entity).options(
+                    joinedload(Entity.properties)
+                ).filter(Entity.id == entity_id).first()
+                if not entity:
+                    return {}
+                props_dict = {p.key.lower(): p.value for p in (entity.properties or [])}
+                result = {}
+                for key in shown_keys:
+                    key_lower = key.lower()
+                    val = props_dict.get(key_lower)
+                    if val is None:
+                        continue
+                    raw = (val or "").strip()
+                    if key_lower == "hp":
+                        m = re.match(r"(\d+)", raw)
+                        if m:
+                            n = int(m.group(1))
+                            result["hp_max"] = n
+                            result["hp_current"] = n
+                    elif key_lower == "ac":
+                        m = re.match(r"(\d+)", raw)
+                        if m:
+                            n = int(m.group(1))
+                            result["ac_base"] = n
+                            result["ac_current"] = n
+                    else:
+                        m = re.match(r"(\d+)", raw)
+                        result[key_lower] = int(m.group(1)) if m else raw
+                return result
+        except Exception as e:
+            print(f"Error getting entity combat tracker props: {e}")
+        return {}
+
     def get_entity_initiative_modifier(self, entity_id: str) -> int:
         """Load entity by id and return initiative modifier (from property or computed from DEX). Returns 0 if not found."""
         try:
@@ -1676,13 +1729,7 @@ class StatBlockViewerWidget(QWidget):
             data["initiative"] = mod
             data["result"] = total
             if data.get("type") == "entity":
-                hp_max, ac_base = self.get_entity_hp_and_ac(data["id"])
-                if hp_max is not None:
-                    data["hp_max"] = hp_max
-                    data["hp_current"] = hp_max
-                if ac_base is not None:
-                    data["ac_base"] = ac_base
-                    data["ac_current"] = ac_base
+                data.update(self.get_entity_combat_tracker_props(data["id"]))
             self.combat_tracker_widget.add_combatant(data)
             return
         reply = QMessageBox.question(
@@ -2095,13 +2142,7 @@ class StatBlockViewerWidget(QWidget):
             # In combat mode also add to tracker (pass result so we don't roll twice)
             if getattr(self, "combat_mode", False) and getattr(self, "combat_tracker_widget", None):
                 data = {"type": "entity", "id": entity_id, "name": entity_name, "initiative": initiative_int, "result": total}
-                hp_max, ac_base = self.get_entity_hp_and_ac(entity_id)
-                if hp_max is not None:
-                    data["hp_max"] = hp_max
-                    data["hp_current"] = hp_max
-                if ac_base is not None:
-                    data["ac_base"] = ac_base
-                    data["ac_current"] = ac_base
+                data.update(self.get_entity_combat_tracker_props(entity_id))
                 self.combat_tracker_widget.add_combatant(data)
 
         btn.clicked.connect(_on_click)

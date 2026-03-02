@@ -1,18 +1,21 @@
 """Rich text note editor widget."""
 import re
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, 
+    QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
     QToolBar, QFontComboBox, QSpinBox, QLabel, QCheckBox,
-    QFileDialog, QMessageBox, QLineEdit, QPushButton, QSizePolicy
+    QFileDialog, QMessageBox, QLineEdit, QPushButton, QSizePolicy,
+    QToolButton, QGraphicsDropShadowEffect, QMenu, QWidgetAction,
 )
 from PyQt6.QtGui import QAction, QFont, QTextCharFormat, QColor, QTextCursor, QPainter, QPainterPath
-from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
 from pathlib import Path
 
 
 class NoteEditor(QWidget):
     """Rich text editor for notes with formatting toolbar."""
-    
+
+    attach_clicked = pyqtSignal(str, object)  # (source_kind, source_id)
+
     def __init__(self, parent=None, note_id=None, note_title=None, parent_id=None):
         super().__init__(parent)
         self.note_id = note_id  # Database note ID
@@ -203,6 +206,33 @@ class NoteEditor(QWidget):
         self.auto_save_action.setChecked(True)
         self.auto_save_action.setToolTip("Auto-save enabled")
         self.toolbar.addAction(self.auto_save_action)
+        # Spacer to push attach button to the right (same line, right-aligned)
+        toolbar_spacer = QWidget()
+        toolbar_spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.toolbar.addWidget(toolbar_spacer)
+        # Attach button (right-aligned on same line as auto-save) with button shadow
+        self.attach_btn = QToolButton()
+        self.attach_btn.setText("\U0001f4ce")
+        self.attach_btn.setToolTip("Attach")
+        self.attach_btn.setFixedSize(28, 28)
+        self.attach_btn.setStyleSheet("""
+            QToolButton {
+                background-color: #3c3c3c;
+                border: 1px solid #4c4c4c;
+                border-radius: 4px;
+                font-size: 16px;
+            }
+            QToolButton:hover { background-color: #4a4a4a; border-color: #5c5c5c; }
+            QToolButton:pressed { background-color: #2e2e2e; border-color: #383838; }
+        """)
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(6)
+        shadow.setXOffset(0)
+        shadow.setYOffset(2)
+        shadow.setColor(QColor(0, 0, 0, 80))
+        self.attach_btn.setGraphicsEffect(shadow)
+        self.attach_btn.clicked.connect(self._on_attach_btn_clicked)
+        self.toolbar.addWidget(self.attach_btn)
         
         layout.addWidget(self.toolbar)
         
@@ -279,6 +309,44 @@ class NoteEditor(QWidget):
         from PyQt6.QtGui import QKeySequence, QShortcut
         save_db_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
         save_db_shortcut.activated.connect(self.save_to_database)
+    
+    def _on_add_relation_triggered(self):
+        """Emit attach_clicked with context if note is saved; else prompt to save first."""
+        if self.note_id is None:
+            QMessageBox.information(
+                self,
+                "Save first",
+                "Save the note first to add relations.",
+            )
+            return
+        self.attach_clicked.emit("note", self.note_id)
+
+    def _on_attach_btn_clicked(self):
+        """Show popup menu with search bar and relation options list."""
+        if self.note_id is None:
+            QMessageBox.information(
+                self,
+                "Save first",
+                "Save the note first to add relations.",
+            )
+            return
+        from ui.dialogs.add_relation_dialog import AddRelationPopupWidget
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #2b2b2b;
+                color: #e0e0e0;
+                padding: 0;
+                border: 1px solid #4c4c4c;
+                border-radius: 4px;
+            }
+        """)
+        content = AddRelationPopupWidget("note", self.note_id, menu)
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(content)
+        menu.addAction(action)
+        content.closed_requested.connect(menu.close)
+        menu.exec(self.attach_btn.mapToGlobal(self.attach_btn.rect().bottomLeft()))
         
     def change_font_family(self, font):
         """Change the font family."""

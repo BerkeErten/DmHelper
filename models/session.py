@@ -20,7 +20,7 @@ class Session(Base):
     
     # Relationships
     notes = relationship("Note", back_populates="session", cascade="all, delete-orphan")
-    # Note: Entity model removed - using Note model with types instead
+    entity_session_links = relationship("EntitySessionLink", back_populates="session", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<Session(id={self.id}, name='{self.name}')>"

@@ -123,6 +123,7 @@ class TabManagerWidget(QWidget):
         note_editor = NoteEditor(note_id=note_id, note_title=display_title)
         # Ensure note editor expands to fill available space
         note_editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        note_editor.attach_clicked.connect(self._on_attach_clicked)
         
         index = self.tab_widget.addTab(note_editor, display_title)
         self.tab_widget.setCurrentIndex(index)
@@ -145,6 +146,7 @@ class TabManagerWidget(QWidget):
         stat_block = StatBlockEditor(entity_id=entity_id)
         # Ensure stat block expands to fill available space
         stat_block.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        stat_block.attach_clicked.connect(self._on_attach_clicked)
         
         index = self.tab_widget.addTab(stat_block, title)
         self.tab_widget.setCurrentIndex(index)
@@ -152,6 +154,14 @@ class TabManagerWidget(QWidget):
         
         return index
         
+    def _on_attach_clicked(self, source_kind: str, source_id):
+        """Open Add Relation dialog when user chooses 'Click to add relation'."""
+        if source_id is None:
+            return
+        from ui.dialogs.add_relation_dialog import AddRelationDialog
+        dialog = AddRelationDialog(source_kind, source_id, parent=self)
+        dialog.exec()
+    
     def close_tab(self, index: int):
         """Close a tab."""
         if self.tab_widget.count() == 0:

@@ -1,11 +1,11 @@
 """Stat Block Editor using EntityProperty and EntitySection models."""
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit, 
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QPushButton, QTextEdit, QScrollArea, QSizePolicy, QFrame,
     QComboBox, QMessageBox, QApplication, QCheckBox, QListWidget, QListWidgetItem,
-    QInputDialog, QTabWidget
+    QInputDialog, QTabWidget, QToolButton, QGraphicsDropShadowEffect, QMenu, QWidgetAction,
 )
-from PyQt6.QtGui import QFont, QDrag, QPainter, QPixmap
+from PyQt6.QtGui import QFont, QDrag, QPainter, QPixmap, QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QMimeData, QPoint
 from datetime import datetime
 from core.database import DatabaseManager
@@ -1713,7 +1713,9 @@ STATBLOCK_INNER_TABS_STYLE = """
 
 class StatBlockEditor(QWidget):
     """Complete stat block editor using EntityProperty and EntitySection."""
-    
+
+    attach_clicked = pyqtSignal(str, object)  # (source_kind, source_id)
+
     def __init__(self, parent=None, entity_id=None):
         super().__init__(parent)
         self.entity_id = entity_id
@@ -1856,6 +1858,30 @@ class StatBlockEditor(QWidget):
         """)
         self.add_skill_proficiency_btn.clicked.connect(self.toggle_skill_proficiency)
         title_layout.addWidget(self.add_skill_proficiency_btn)
+        # Attach button (right-aligned, next to add bonus buttons) with button shadow
+        title_layout.addStretch()
+        self.attach_btn = QToolButton()
+        self.attach_btn.setText("\U0001f4ce")
+        self.attach_btn.setToolTip("Attach")
+        self.attach_btn.setFixedSize(28, 28)
+        self.attach_btn.setStyleSheet("""
+            QToolButton {
+                background-color: #3c3c3c;
+                border: 1px solid #4c4c4c;
+                border-radius: 4px;
+                font-size: 16px;
+            }
+            QToolButton:hover { background-color: #4a4a4a; border-color: #5c5c5c; }
+            QToolButton:pressed { background-color: #2e2e2e; border-color: #383838; }
+        """)
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(6)
+        shadow.setXOffset(0)
+        shadow.setYOffset(2)
+        shadow.setColor(QColor(0, 0, 0, 80))
+        self.attach_btn.setGraphicsEffect(shadow)
+        self.attach_btn.clicked.connect(self._on_attach_btn_clicked)
+        title_layout.addWidget(self.attach_btn)
         stats_layout.addLayout(title_layout)
         
         # CR and Initiative row
@@ -2499,6 +2525,44 @@ class StatBlockEditor(QWidget):
         if section_type in self.section_order:
             self.section_order.remove(section_type)
         self._refresh_sections_grid()
+    
+    def _on_add_relation_triggered(self):
+        """Emit attach_clicked with context if entity is saved; else prompt to save first."""
+        if self.entity_id is None:
+            QMessageBox.information(
+                self,
+                "Save first",
+                "Save the statblock first to add relations.",
+            )
+            return
+        self.attach_clicked.emit("entity", self.entity_id)
+
+    def _on_attach_btn_clicked(self):
+        """Show popup menu with search bar and relation options list."""
+        if self.entity_id is None:
+            QMessageBox.information(
+                self,
+                "Save first",
+                "Save the statblock first to add relations.",
+            )
+            return
+        from ui.dialogs.add_relation_dialog import AddRelationPopupWidget
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #2b2b2b;
+                color: #e0e0e0;
+                padding: 0;
+                border: 1px solid #4c4c4c;
+                border-radius: 4px;
+            }
+        """)
+        content = AddRelationPopupWidget("entity", self.entity_id, menu)
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(content)
+        menu.addAction(action)
+        content.closed_requested.connect(menu.close)
+        menu.exec(self.attach_btn.mapToGlobal(self.attach_btn.rect().bottomLeft()))
     
     def on_name_changed(self, name: str):
         """Handle name change."""

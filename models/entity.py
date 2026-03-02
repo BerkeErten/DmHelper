@@ -34,6 +34,8 @@ class Entity(Base):
     sections = relationship("EntitySection", back_populates="entity", cascade="all, delete-orphan", order_by="EntitySection.sort_order")
     outgoing_relations = relationship("EntityRelation", foreign_keys="[EntityRelation.from_id]", back_populates="from_entity", cascade="all, delete-orphan")
     incoming_relations = relationship("EntityRelation", foreign_keys="[EntityRelation.to_id]", back_populates="to_entity", cascade="all, delete-orphan")
+    entity_note_links = relationship("EntityNoteLink", back_populates="entity", cascade="all, delete-orphan")
+    entity_session_links = relationship("EntitySessionLink", back_populates="entity", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<Entity(id={self.id}, name='{self.name}', type='{self.type}')>"

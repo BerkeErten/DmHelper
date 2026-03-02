@@ -18,3 +18,27 @@ def set_open_knowledge_base_at_startup(value: bool) -> None:
     """Set whether to open the Knowledge Base window at startup."""
     s = QSettings(_ORG, _APP)
     s.setValue("open_knowledge_base_at_startup", value)
+
+
+_COMBAT_TRACKER_KEYS_DEFAULT = ["hp", "ac"]
+
+
+def get_combat_tracker_property_keys() -> list[str]:
+    """Return ordered list of property keys to show in combat tracker (e.g. hp, ac, luck, doom)."""
+    s = QSettings(_ORG, _APP)
+    val = s.value("combat_tracker_property_keys")
+    if val is None:
+        return list(_COMBAT_TRACKER_KEYS_DEFAULT)
+    if isinstance(val, list):
+        return [str(k).strip().lower() for k in val if str(k).strip()]
+    # stored as comma-separated string
+    raw = str(val).strip()
+    if not raw:
+        return list(_COMBAT_TRACKER_KEYS_DEFAULT)
+    return [k.strip().lower() for k in raw.split(",") if k.strip()]
+
+
+def set_combat_tracker_property_keys(keys: list[str]) -> None:
+    """Set the ordered list of property keys to show in combat tracker."""
+    s = QSettings(_ORG, _APP)
+    s.setValue("combat_tracker_property_keys", ",".join(k.strip().lower() for k in keys if k.strip()))

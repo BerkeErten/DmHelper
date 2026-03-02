@@ -30,8 +30,8 @@ def init_database():
     _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
     
     # Import models to register them
-    from models import note, session, relation, note_metadata, entity, entity_property, entity_section, entity_relation
-    
+    from models import note, session, relation, note_metadata, entity, entity_property, entity_section, entity_relation, entity_note_link, entity_session_link
+
     # Create all tables (including note_tags association table)
     Base.metadata.create_all(bind=_engine)
     
@@ -119,6 +119,39 @@ def migrate_database(engine):
                 )
             """))
             print("✓ Created 'note_metadata' table")
+
+        # Create entity_note_links table (cross-domain: entity <-> note)
+        table_names = inspector.get_table_names()
+        if 'entity_note_links' not in table_names and 'entities' in table_names:
+            conn.execute(text("""
+                CREATE TABLE entity_note_links (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_id VARCHAR(36) NOT NULL,
+                    note_id INTEGER NOT NULL,
+                    relation_type VARCHAR(50) DEFAULT 'reference',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (entity_id, note_id),
+                    FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+                    FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
+                )
+            """))
+            print("✓ Created 'entity_note_links' table")
+
+        # Create entity_session_links table (cross-domain: entity <-> session)
+        if 'entity_session_links' not in table_names and 'entities' in table_names and 'sessions' in table_names:
+            conn.execute(text("""
+                CREATE TABLE entity_session_links (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_id VARCHAR(36) NOT NULL,
+                    session_id INTEGER NOT NULL,
+                    relation_type VARCHAR(50),
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (entity_id, session_id),
+                    FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                )
+            """))
+            print("✓ Created 'entity_session_links' table")
 
 
 def get_session():
