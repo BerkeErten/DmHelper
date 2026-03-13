@@ -11,7 +11,7 @@ from core.database import DatabaseManager
 from core.dice_roller import DiceRoller
 from core.dnd_utils import proficiency_bonus_from_cr, calculate_initiative_from_ability_score
 from core.events import signal_hub
-from core.settings import get_combat_tracker_property_keys
+from core.settings import get_combat_tracker_property_keys, get_combat_tracker_show_mark_defeated
 from models.entity import Entity
 from models.note import Note
 import json
@@ -253,7 +253,8 @@ class CombatTrackerWidget(QWidget):
             list_item.setSizeHint(self._combatant_item_size())
             self.combatants_list.addItem(list_item)
             is_current_turn = (i == self._current_turn_index)
-            row_widget = self._make_combatant_row_widget(display_name, result, conditions, tracker_id, is_current_turn=is_current_turn)
+            is_dead = c.get("dead", False)
+            row_widget = self._make_combatant_row_widget(display_name, result, conditions, tracker_id, is_current_turn=is_current_turn, is_dead=is_dead)
             self.combatants_list.setItemWidget(list_item, row_widget)
             if tracker_id == selected_tracker_id:
                 row_to_select = self.combatants_list.count() - 1
@@ -333,14 +334,19 @@ class CombatTrackerWidget(QWidget):
 
         return ConditionDot(base_color, condition_name, condition_name, tracker_id)
 
-    def _make_editable_combatant_cell(self, initial_text: str, tracker_id, field: str, display_text: str = None) -> QWidget:
+    def _make_editable_combatant_cell(self, initial_text: str, tracker_id, field: str, display_text: str = None, is_dead: bool = False) -> QWidget:
         """Widget that shows text; double-click to edit. On commit updates combatant identified by tracker_id."""
         parent = self
         if display_text is None:
             display_text = initial_text
-        style_label = "color: #E2E8F0; font-size: 11px;"
-        if field == "result":
-            style_label = "color: #CBD5E0; font-size: 11px; font-weight: bold;"
+        if is_dead:
+            style_label = "color: #6b7280; font-size: 11px;"
+            if field == "result":
+                style_label = "color: #6b7280; font-size: 11px; font-weight: bold;"
+        else:
+            style_label = "color: #E2E8F0; font-size: 11px;"
+            if field == "result":
+                style_label = "color: #CBD5E0; font-size: 11px; font-weight: bold;"
         style_edit = """
             QLineEdit {
                 background-color: #3c3c3c;
@@ -394,23 +400,34 @@ class CombatTrackerWidget(QWidget):
         edit.returnPressed.connect(commit)
         return stack
 
-    def _make_combatant_row_widget(self, name_text: str, result: int | None, conditions: list, tracker_id, is_current_turn: bool = False) -> QWidget:
-        """Row: editable name, condition dots, stretch, editable (result) on right. tracker_id identifies this combatant. When is_current_turn, draw red border around this row only (not name/initiative cells)."""
+    def _make_combatant_row_widget(self, name_text: str, result: int | None, conditions: list, tracker_id, is_current_turn: bool = False, is_dead: bool = False) -> QWidget:
+        """Row: editable name, condition dots, stretch, editable (result) on right. tracker_id identifies this combatant. When is_current_turn, draw red border around this row only (not name/initiative cells). When is_dead, use darker styling and show skull icon."""
         row = QWidget()
         if is_current_turn:
             row.setObjectName("currentTurnRow")
             row.setStyleSheet("#currentTurnRow { border: 2px solid #c53030; border-radius: 4px; background-color: transparent; }")
             row.setMinimumHeight(24)
+        if is_dead:
+            row.setObjectName("deadCombatantRow")
+            row.setStyleSheet("#deadCombatantRow { background-color: #1e1e24; border-radius: 4px; color: #6b7280; }")
+            row.setMinimumHeight(24)
         layout = QHBoxLayout(row)
         layout.setContentsMargins(6, 2, 6, 2)
         layout.setSpacing(4)
-        name_cell = self._make_editable_combatant_cell(name_text, tracker_id, "name")
+        name_cell = self._make_editable_combatant_cell(name_text, tracker_id, "name", is_dead=is_dead)
         layout.addWidget(name_cell)
+        if is_dead:
+            skull_label = QLabel("💀")
+            skull_label.setToolTip("Defeated")
+            skull_label.setFixedSize(14, 14)
+            skull_label.setStyleSheet("color: #6b7280; font-size: 12px;")
+            skull_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(skull_label)
         for cond in conditions:
             layout.addWidget(self._make_condition_dot(cond, tracker_id))
         layout.addStretch()
         if result is not None:
-            result_cell = self._make_editable_combatant_cell(str(result), tracker_id, "result", display_text=f"({result})")
+            result_cell = self._make_editable_combatant_cell(str(result), tracker_id, "result", display_text=f"({result})", is_dead=is_dead)
             result_cell.setMinimumWidth(44)
             layout.addWidget(result_cell)
         return row
@@ -462,12 +479,20 @@ class CombatTrackerWidget(QWidget):
         combatant_index = self._index_by_tracker_id(tracker_id)
         if combatant_index < 0:
             return
+        c = self.combatants[combatant_index]
+        is_dead = c.get("dead", False)
         menu = QMenu(self)
         add_cond_act = menu.addAction("➕ Add Condition")
+        mark_defeated_act = None
+        if get_combat_tracker_show_mark_defeated():
+            mark_defeated_act = menu.addAction("Mark as alive" if is_dead else "Mark as defeated")
         remove_act = menu.addAction("Remove from tracker")
         action = menu.exec(self.combatants_list.mapToGlobal(pos))
         if action == add_cond_act:
             self._show_add_condition_dialog(combatant_index)
+        elif mark_defeated_act is not None and action == mark_defeated_act:
+            self.combatants[combatant_index]["dead"] = not is_dead
+            self._refresh_list()
         elif action == remove_act:
             self.combatants.pop(combatant_index)
             self._refresh_list()
@@ -591,17 +616,28 @@ class CombatTrackerWidget(QWidget):
         if idx < 0:
             return QWidget()
         c = self.combatants[idx]
+        is_dead = c.get("dead", False)
         shown_keys = get_combat_tracker_property_keys()
-        label_style = "color: #CBD5E0; font-size: 8px;"
+        label_style = "color: #CBD5E0; font-size: 8px;" if not is_dead else "color: #6b7280; font-size: 8px;"
         frame = QFrame()
-        frame.setStyleSheet("""
-            QFrame {
-                background-color: #252530;
-                border: 1px solid #4c4c4c;
-                border-radius: 3px;
-                padding: 2px;
-            }
-        """)
+        if is_dead:
+            frame.setStyleSheet("""
+                QFrame {
+                    background-color: #1a1a22;
+                    border: 1px solid #3c3c3c;
+                    border-radius: 3px;
+                    padding: 2px;
+                }
+            """)
+        else:
+            frame.setStyleSheet("""
+                QFrame {
+                    background-color: #252530;
+                    border: 1px solid #4c4c4c;
+                    border-radius: 3px;
+                    padding: 2px;
+                }
+            """)
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(4, 3, 4, 3)
         layout.setSpacing(2)

@@ -42,3 +42,18 @@ def set_combat_tracker_property_keys(keys: list[str]) -> None:
     """Set the ordered list of property keys to show in combat tracker."""
     s = QSettings(_ORG, _APP)
     s.setValue("combat_tracker_property_keys", ",".join(k.strip().lower() for k in keys if k.strip()))
+
+
+def get_combat_tracker_show_mark_defeated() -> bool:
+    """Return whether to show 'Mark as defeated' in the combat tracker context menu."""
+    s = QSettings(_ORG, _APP)
+    val = s.value("combat_tracker_show_mark_defeated", True)
+    if isinstance(val, bool):
+        return val
+    return str(val).lower() in ("1", "true", "yes")
+
+
+def set_combat_tracker_show_mark_defeated(value: bool) -> None:
+    """Set whether to show 'Mark as defeated' in the combat tracker context menu."""
+    s = QSettings(_ORG, _APP)
+    s.setValue("combat_tracker_show_mark_defeated", value)
