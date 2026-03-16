@@ -13,6 +13,8 @@ from core.settings import (
     set_combat_tracker_property_keys,
     get_combat_tracker_show_mark_defeated,
     set_combat_tracker_show_mark_defeated,
+    get_data_manager_show_hover_add_button,
+    set_data_manager_show_hover_add_button,
 )
 
 # Shared styles (app theme: neutral dark grays)
@@ -288,6 +290,41 @@ class CombatTrackerSettingsPage(QWidget):
         return True
 
 
+class DataManagerSettingsPage(QWidget):
+    """Data Manager: tree hover '+' button on/off."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._setup_ui()
+        self._load()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+
+        title = QLabel("Data Manager Settings")
+        title.setStyleSheet(_PAGE_TITLE)
+        layout.addWidget(title)
+
+        _add_section_heading(layout, "Tree")
+        self.show_hover_add_cb = _make_toggle_checkbox()
+        _add_setting_row(
+            layout,
+            "Show '+' on row hover",
+            "When enabled, hovering a row shows a plus button to add under category or add to viewer.",
+            self.show_hover_add_cb,
+        )
+        layout.addStretch()
+
+    def _load(self):
+        self.show_hover_add_cb.setChecked(get_data_manager_show_hover_add_button())
+
+    def save(self):
+        set_data_manager_show_hover_add_button(self.show_hover_add_cb.isChecked())
+        return True
+
+
 def _placeholder_page(title: str) -> QWidget:
     """Build a placeholder content page with a section heading."""
     w = QWidget()
@@ -372,10 +409,11 @@ class SettingsDialog(QDialog):
 
         # Right: scrollable content per category (Cursor-style — no section list, single scroll area per page)
         self._combat_tracker_page = CombatTrackerSettingsPage(self)
+        self._data_manager_page = DataManagerSettingsPage(self)
         pages = [
             self._combat_tracker_page,
             _placeholder_page("Statblock viewer"),
-            _placeholder_page("Data manager"),
+            self._data_manager_page,
             _placeholder_page("Knowledge base"),
         ]
         self.right_stacked = QStackedWidget()
@@ -415,6 +453,8 @@ class SettingsDialog(QDialog):
 
     def _apply_and_accept(self):
         if isinstance(self._combat_tracker_page, CombatTrackerSettingsPage) and not self._combat_tracker_page.save():
+            return
+        if not self._data_manager_page.save():
             return
         self.accept()
 

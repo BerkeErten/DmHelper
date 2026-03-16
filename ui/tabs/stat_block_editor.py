@@ -4,9 +4,10 @@ from PyQt6.QtWidgets import (
     QPushButton, QTextEdit, QScrollArea, QSizePolicy, QFrame,
     QComboBox, QMessageBox, QApplication, QCheckBox, QListWidget, QListWidgetItem,
     QInputDialog, QTabWidget, QToolButton, QGraphicsDropShadowEffect, QMenu, QWidgetAction,
+    QAbstractItemView,
 )
 from PyQt6.QtGui import QFont, QDrag, QPainter, QPixmap, QColor
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QMimeData, QPoint
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint, QMimeData, QSize
 from datetime import datetime
 from core.database import DatabaseManager
 from core.dnd_utils import calculate_initiative_from_ability_score, proficiency_bonus_from_cr
@@ -16,156 +17,6 @@ from models.entity_property import EntityProperty
 from models.entity_section import EntitySection
 import json
 import re
-
-
-class PropertiesDropWidget(QWidget):
-    """Widget that accepts property drops with visual feedback."""
-    
-    def __init__(self, parent_editor):
-        super().__init__()
-        self.parent_editor = parent_editor
-        self.setAcceptDrops(True)
-        self.placeholder_widget = None
-        self.drag_over = False
-        self.original_style = STATBLOCK_PANEL_STYLE
-        self.setStyleSheet(self.original_style)
-    
-    def dragEnterEvent(self, event):
-        """Handle drag enter."""
-        if event.mimeData().hasFormat("application/x-statblock-item"):
-            data = event.mimeData().data("application/x-statblock-item").data().decode()
-            if data.startswith("property:"):
-                self.drag_over = True
-                # Change background to lighter color
-                if not self.original_style:
-                    self.original_style = self.styleSheet()
-                self.setStyleSheet("""
-                    QWidget {
-                        background-color: #5A6578;
-                        border: 2px dashed #5DADE2;
-                        border-radius: 4px;
-                        padding: 4px;
-                    }
-                """)
-                event.acceptProposedAction()
-                self._show_placeholder(event.position().toPoint(), data)
-                return
-        event.ignore()
-    
-    def dragMoveEvent(self, event):
-        """Handle drag move - update placeholder position."""
-        if event.mimeData().hasFormat("application/x-statblock-item"):
-            data = event.mimeData().data("application/x-statblock-item").data().decode()
-            if data.startswith("property:"):
-                event.acceptProposedAction()
-                self._update_placeholder(event.position().toPoint(), data)
-                return
-        event.ignore()
-    
-    def dragLeaveEvent(self, event):
-        """Handle drag leave - remove visual feedback."""
-        self.drag_over = False
-        if self.original_style:
-            self.setStyleSheet(self.original_style)
-        self._hide_placeholder()
-        super().dragLeaveEvent(event)
-    
-    def dropEvent(self, event):
-        """Handle drop."""
-        self.drag_over = False
-        if self.original_style:
-            self.setStyleSheet(self.original_style)
-        self._hide_placeholder()
-        
-        if not event.mimeData().hasFormat("application/x-statblock-item"):
-            event.ignore()
-            return
-        
-        data = event.mimeData().data("application/x-statblock-item").data().decode()
-        if not data.startswith("property:"):
-            event.ignore()
-            return
-        
-        prop_key = data.split(":")[1]
-        if prop_key not in self.parent_editor.property_widgets:
-            event.ignore()
-            return
-        
-        # Find drop position
-        pos = event.position().toPoint()
-        drop_row = self.parent_editor._find_drop_row(self.parent_editor.properties_grid, pos)
-        
-        # Reorder
-        if prop_key in self.parent_editor.property_order:
-            self.parent_editor.property_order.remove(prop_key)
-        self.parent_editor.property_order.insert(drop_row, prop_key)
-        self.parent_editor._refresh_properties_grid()
-        
-        event.acceptProposedAction()
-    
-    def _show_placeholder(self, pos, data):
-        """Show placeholder at drop position."""
-        prop_key = data.split(":")[1]
-        if prop_key not in self.parent_editor.property_widgets:
-            return
-        
-        # Get the dragged widget to match its size
-        dragged_widget = self.parent_editor.property_widgets[prop_key]
-        
-        # Find drop row
-        drop_row = self.parent_editor._find_drop_row(self.parent_editor.properties_grid, pos)
-        
-        # Create placeholder widget
-        self._hide_placeholder()  # Remove existing if any
-        
-        self.placeholder_widget = QFrame()
-        self.placeholder_widget.setStyleSheet("""
-            QFrame {
-                background-color: rgba(93, 173, 226, 0.2);
-                border: 2px dashed #5DADE2;
-                border-radius: 6px;
-            }
-        """)
-        # Match the dragged widget's size dynamically
-        dragged_height = dragged_widget.sizeHint().height()
-        if dragged_height < 32:
-            dragged_height = 32
-        self.placeholder_widget.setFixedHeight(dragged_height)
-        self.placeholder_widget.setMinimumHeight(32)
-        # Set width to match container width
-        self.placeholder_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        
-        # Add placeholder at drop position
-        self.parent_editor.properties_grid.addWidget(self.placeholder_widget, drop_row, 0)
-    
-    def _update_placeholder(self, pos, data):
-        """Update placeholder position during drag."""
-        prop_key = data.split(":")[1]
-        if prop_key not in self.parent_editor.property_widgets:
-            return
-        
-        dragged_widget = self.parent_editor.property_widgets[prop_key]
-        drop_row = self.parent_editor._find_drop_row(self.parent_editor.properties_grid, pos)
-        
-        if self.placeholder_widget:
-            # Update height to match dragged widget dynamically
-            dragged_height = dragged_widget.sizeHint().height()
-            if dragged_height < 32:
-                dragged_height = 32
-            self.placeholder_widget.setFixedHeight(dragged_height)
-            # Remove and re-add at new position
-            self.parent_editor.properties_grid.removeWidget(self.placeholder_widget)
-            self.parent_editor.properties_grid.addWidget(self.placeholder_widget, drop_row, 0)
-        else:
-            self._show_placeholder(pos, data)
-    
-    def _hide_placeholder(self):
-        """Hide placeholder widget."""
-        if self.placeholder_widget:
-            self.parent_editor.properties_grid.removeWidget(self.placeholder_widget)
-            self.placeholder_widget.setParent(None)
-            self.placeholder_widget.deleteLater()
-            self.placeholder_widget = None
 
 
 class SectionsDropWidget(QWidget):
@@ -319,11 +170,10 @@ class SectionsDropWidget(QWidget):
 
 
 class PropertyEntryWidget(QWidget):
-    """Editable property entry (key-value pair) with drag support."""
+    """Editable property entry (key-value pair); reorder via list drag (Settings-style)."""
     
     property_edited = pyqtSignal(str, str, str, str)  # old_key, new_key, old_value, new_value
     property_deleted = pyqtSignal(str)  # property_key
-    drag_started = pyqtSignal(object)  # widget
     
     def __init__(self, prop_key: str, prop_value: str, parent=None):
         super().__init__(parent)
@@ -331,10 +181,7 @@ class PropertyEntryWidget(QWidget):
         self.prop_value = prop_value
         self.editing_key = False
         self.editing_value = False
-        self.drag_start_position = None
-        self.is_dragging = False
         self.original_style = None
-        self.setAcceptDrops(True)
         self.init_ui()
     
     def init_ui(self):
@@ -480,23 +327,7 @@ class PropertyEntryWidget(QWidget):
         """)
         self.delete_btn.clicked.connect(self.delete_property)
         
-        # Add drag handle
-        drag_handle = QLabel("::")
-        drag_handle.setStyleSheet("""
-            QLabel {
-                color: #888888;
-                font-size: 16px;
-                padding: 4px;
-                min-width: 20px;
-                max-width: 20px;
-            }
-        """)
-        drag_handle.setCursor(Qt.CursorShape.SizeAllCursor)
-        drag_handle.mousePressEvent = self.on_drag_handle_press
-        drag_handle.mouseMoveEvent = self.on_drag_handle_move
-        
-        # Edit container layout
-        edit_layout.addWidget(drag_handle)
+        # Edit container layout (reorder via list drag, no handle)
         edit_layout.addWidget(self.key_label)
         edit_layout.addWidget(self.key_edit)
         edit_layout.addWidget(separator)
@@ -542,61 +373,6 @@ class PropertyEntryWidget(QWidget):
         self.update_view_text()
         self.view_label.setVisible(True)
         self.edit_container.setVisible(False)
-    
-    def on_drag_handle_press(self, event):
-        """Handle drag handle press."""
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.drag_start_position = event.position().toPoint()
-    
-    def on_drag_handle_move(self, event):
-        """Handle drag handle move."""
-        if not (event.buttons() & Qt.MouseButton.LeftButton):
-            return
-        if self.drag_start_position is None:
-            return
-        
-        if ((event.position().toPoint() - self.drag_start_position).manhattanLength() < 
-            QApplication.startDragDistance()):
-            return
-        
-        # Start drag
-        drag = QDrag(self)
-        mime_data = QMimeData()
-        mime_data.setText(f"property:{self.prop_key}")
-        mime_data.setData("application/x-statblock-item", 
-                         f"property:{self.prop_key}".encode())
-        drag.setMimeData(mime_data)
-        
-        # Create drag pixmap
-        pixmap = self.grab()
-        drag.setPixmap(pixmap)
-        drag.setHotSpot(event.position().toPoint() - self.drag_start_position)
-        
-        # Change background color when dragging starts
-        self.is_dragging = True
-        if not self.original_style:
-            self.original_style = self.styleSheet()
-        self.setStyleSheet("""
-            QWidget {
-                background-color: #5A6578;
-                border: 2px solid #5DADE2;
-                border-radius: 6px;
-                padding: 2px;
-            }
-        """)
-        
-        # Emit signal
-        self.drag_started.emit(self)
-        
-        # Execute drag
-        result = drag.exec(Qt.DropAction.MoveAction)
-        
-        # Restore original style when drag ends
-        self.is_dragging = False
-        if self.original_style:
-            self.setStyleSheet(self.original_style)
-        self.drag_start_position = None
-    
     
     def start_edit_key(self):
         """Start editing the property key."""
@@ -1724,7 +1500,6 @@ class StatBlockEditor(QWidget):
         self.section_widgets = {}  # section_type -> SectionWidget
         self.property_order = []  # Order of properties
         self.section_order = []  # Order of sections
-        self.dragged_property = None
         self.dragged_section = None
         self.setAcceptDrops(True)
         self.setup_ui()
@@ -1984,15 +1759,23 @@ class StatBlockEditor(QWidget):
         self.props_label = props_label  # Store reference
         self.scroll_layout.addWidget(props_label)
         
-        self.properties_container = PropertiesDropWidget(self)
-        self.properties_container.setMinimumHeight(48)
-        self.properties_grid = QGridLayout(self.properties_container)
-        self.properties_grid.setContentsMargins(4, 4, 4, 4)
-        self.properties_grid.setSpacing(3)
-        self.properties_grid.setColumnStretch(0, 1)
+        self.properties_container = QWidget()
+        self.properties_container_layout = QVBoxLayout(self.properties_container)
+        self.properties_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.properties_list = QListWidget()
+        self.properties_list.setMinimumHeight(80)
+        self.properties_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.properties_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.properties_list.setStyleSheet(
+            "QListWidget { background-color: #2b2b2b; border: 1px solid #4c4c4c; border-radius: 6px; color: #E2E8F0; padding: 4px; } "
+            "QListWidget::item { padding: 2px 4px; } "
+            "QListWidget::item:selected { background-color: #3c3c3c; }"
+        )
+        self.properties_list.model().layoutChanged.connect(self._on_properties_list_order_changed)
+        self.properties_container_layout.addWidget(self.properties_list)
         self.scroll_layout.addWidget(self.properties_container)
         
-        # Track property order
+        # Track property order (synced from list when user reorders)
         self.property_order = []  # List of keys in display order
         
         # Add property button
@@ -2303,59 +2086,41 @@ class StatBlockEditor(QWidget):
         self.section_widgets.clear()
     
     def _add_property_widget(self, key: str, value: str, position: int = None):
-        """Add a property widget to the grid."""
+        """Add a property widget to the list (Settings-style drag reorder)."""
         if key in self.property_widgets:
             return
         
         prop_widget = PropertyEntryWidget(key, value)
         prop_widget.property_edited.connect(self.on_property_edited)
         prop_widget.property_deleted.connect(self.on_property_deleted)
-        prop_widget.drag_started.connect(lambda w: self._on_property_drag_start(w))
         
-        # Add to grid
+        list_item = QListWidgetItem()
+        list_item.setSizeHint(QSize(0, max(32, prop_widget.sizeHint().height())))
         if position is None:
-            position = len(self.property_order)
+            position = self.properties_list.count()
+        self.properties_list.insertItem(position, list_item)
+        self.properties_list.setItemWidget(list_item, prop_widget)
         
-        row = position
-        # Add to grid (single column)
-        self.properties_grid.addWidget(prop_widget, row, 0)
-        
-        # Update order
         if key not in self.property_order:
-            self.property_order.insert(position, key)
+            self.property_order.insert(min(position, len(self.property_order)), key)
         else:
-            # Move to new position
             self.property_order.remove(key)
-            self.property_order.insert(position, key)
-        
+            self.property_order.insert(min(position, len(self.property_order)), key)
         self.property_widgets[key] = prop_widget
-        self._refresh_properties_grid()
+        self._sync_property_order_from_list()
     
-    def _refresh_properties_grid(self):
-        """Refresh properties grid layout."""
-        # Remove all widgets (except placeholder if it exists)
-        for i in reversed(range(self.properties_grid.count())):
-            item = self.properties_grid.itemAt(i)
-            if item:
-                widget = item.widget()
-                if widget and widget != getattr(self.properties_container, 'placeholder_widget', None):
-                    self.properties_grid.removeWidget(widget)
-        
-        # Re-add in order
-        for i, key in enumerate(self.property_order):
-            if key in self.property_widgets:
-                widget = self.property_widgets[key]
-                # Check if placeholder exists at this position
-                placeholder = getattr(self.properties_container, 'placeholder_widget', None)
-                if placeholder and self.properties_grid.indexOf(placeholder) == i:
-                    # Skip placeholder position, insert after
-                    self.properties_grid.addWidget(widget, i + 1, 0)
-                else:
-                    self.properties_grid.addWidget(widget, i, 0)
+    def _on_properties_list_order_changed(self):
+        """Sync property_order from list order after user drags."""
+        self._sync_property_order_from_list()
     
-    def _on_property_drag_start(self, widget):
-        """Handle property drag start."""
-        self.dragged_property = widget
+    def _sync_property_order_from_list(self):
+        """Update property_order to match current list order."""
+        self.property_order = []
+        for i in range(self.properties_list.count()):
+            item = self.properties_list.item(i)
+            w = self.properties_list.itemWidget(item)
+            if w is not None and hasattr(w, "prop_key"):
+                self.property_order.append(w.prop_key)
     
     def _add_section_widget(self, section_type: str, content: str = "", sort_order: int = 0, position: int = None):
         """Add a section widget to the grid."""
@@ -2511,8 +2276,16 @@ class StatBlockEditor(QWidget):
     
     def on_property_deleted(self, key: str):
         """Handle property deletion."""
-        if key in self.property_widgets:
-            self.property_widgets.pop(key)
+        if key not in self.property_widgets:
+            return
+        widget = self.property_widgets[key]
+        for i in range(self.properties_list.count()):
+            if self.properties_list.itemWidget(self.properties_list.item(i)) is widget:
+                self.properties_list.takeItem(i)
+                break
+        self.property_widgets.pop(key)
+        if key in self.property_order:
+            self.property_order.remove(key)
     
     def on_section_changed(self, section_type: str, content: str):
         """Handle section content change."""

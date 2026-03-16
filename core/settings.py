@@ -57,3 +57,18 @@ def set_combat_tracker_show_mark_defeated(value: bool) -> None:
     """Set whether to show 'Mark as defeated' in the combat tracker context menu."""
     s = QSettings(_ORG, _APP)
     s.setValue("combat_tracker_show_mark_defeated", value)
+
+
+def get_data_manager_show_hover_add_button() -> bool:
+    """Return whether to show the '+' button on row hover in the Data Manager tree."""
+    s = QSettings(_ORG, _APP)
+    val = s.value("data_manager_show_hover_add_button", True)
+    if isinstance(val, bool):
+        return val
+    return str(val).lower() in ("1", "true", "yes")
+
+
+def set_data_manager_show_hover_add_button(value: bool) -> None:
+    """Set whether to show the '+' button on row hover in the Data Manager tree."""
+    s = QSettings(_ORG, _APP)
+    s.setValue("data_manager_show_hover_add_button", value)

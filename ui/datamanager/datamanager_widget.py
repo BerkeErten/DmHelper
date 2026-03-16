@@ -3,11 +3,61 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
     QLabel, QPushButton, QHBoxLayout, QLineEdit,
     QTreeWidgetItemIterator, QSizePolicy, QHeaderView,
-    QStyle, QApplication,
+    QStyle, QApplication, QStyledItemDelegate, QStyleOptionViewItem,
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QDropEvent
+from PyQt6.QtCore import Qt, QEvent, QRect
+from PyQt6.QtGui import QColor, QDropEvent, QCursor, QPainter, QPen, QBrush
 from core.events import signal_hub
+from core.settings import get_data_manager_show_hover_add_button
+
+
+# Notion/Obsidian-style hover "+" button drawn by delegate (no overlay widget)
+_BUTTON_SIZE = 22
+_BUTTON_MARGIN = 6
+_BUTTON_BG = QColor(0x4c, 0x4c, 0x4c)
+_BUTTON_FG = QColor(0xff, 0xff, 0xff)
+
+
+class TreeButtonDelegate(QStyledItemDelegate):
+    """Draws a right-aligned circular '+' button when the row is hovered. No overlay widget."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index):
+        # Paint the row as usual first
+        super().paint(painter, option, index)
+        # Draw "+" button only when the row is hovered and setting is on
+        if not (option.state & QStyle.StateFlag.State_MouseOver):
+            return
+        if not get_data_manager_show_hover_add_button():
+            return
+        btn_rect = self.get_button_rect(option)
+        if btn_rect.isEmpty():
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(_BUTTON_BG))
+        painter.drawEllipse(btn_rect)
+        painter.setPen(QPen(_BUTTON_FG, 1.5))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        cx, cy = btn_rect.center().x(), btn_rect.center().y()
+        hw = 4
+        painter.drawLine(cx - hw, cy, cx + hw, cy)
+        painter.drawLine(cx, cy - hw, cx, cy + hw)
+        painter.restore()
+
+    @staticmethod
+    def get_button_rect(option: QStyleOptionViewItem) -> QRect:
+        """Return the rect of the '+' button in the same coordinates as option.rect (viewport)."""
+        r = option.rect
+        size = _BUTTON_SIZE
+        margin = _BUTTON_MARGIN
+        x = r.right() - size - margin
+        y = r.y() + (r.height() - size) // 2
+        return QRect(x, y, size, size)
 
 
 class CategoryTreeWidget(QTreeWidget):
@@ -161,11 +211,61 @@ class DataManagerWidget(QWidget):
         self.tree_widget.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
         self.tree_widget.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.tree_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        # Hover background for items (dark theme)
+        self.tree_widget.setStyleSheet("""
+            QTreeWidget { background-color: #2b2b2b; border: 1px solid #4c4c4c; border-radius: 4px; }
+            QTreeWidget::item { padding: 4px 6px; color: #E2E8F0; }
+            QTreeWidget::item:hover { background-color: #3c3c3c; }
+        """)
         layout.addWidget(self.tree_widget)
+        
+        # Delegate-drawn "+" on hover (no overlay widget; works with scroll and drag & drop)
+        self.tree_widget.setItemDelegate(TreeButtonDelegate(self.tree_widget))
+        self.tree_widget.viewport().installEventFilter(self)
         
         # Set minimum width
         self.setMinimumWidth(250)
         
+    def eventFilter(self, obj, event):
+        """Detect mouse press inside the delegate-drawn '+' button and trigger action."""
+        if obj is not self.tree_widget.viewport():
+            return False
+        if event.type() != QEvent.Type.MouseButtonPress:
+            return False
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        index = self.tree_widget.indexAt(pos)
+        if not index.isValid():
+            return False
+        option = QStyleOptionViewItem()
+        option.rect = self.tree_widget.visualRect(index)
+        btn_rect = TreeButtonDelegate.get_button_rect(option)
+        if not btn_rect.contains(pos):
+            return False
+        if not get_data_manager_show_hover_add_button():
+            return False
+        item = self.tree_widget.itemFromIndex(index)
+        if item is None:
+            return False
+        self._handle_plus_clicked(item)
+        return True
+
+    def _handle_plus_clicked(self, item: QTreeWidgetItem):
+        """Handle click on the '+' area: category -> add under category; child -> add to viewer."""
+        if item.parent() is None:
+            category_type = self.get_entity_type_from_category(item)
+            if category_type == "note":
+                self.create_new_note_in_db()
+            else:
+                self.add_entity_to_category(item)
+        else:
+            if not (item.flags() & Qt.ItemFlag.ItemIsSelectable):
+                parent = item.parent()
+                if self.get_entity_type_from_category(parent) == "note":
+                    self.create_new_note_in_db()
+                return
+            self.tree_widget.setCurrentItem(item)
+            self.add_selected_to_statblock_viewer()
+
     def connect_signals(self):
         """Connect signals and slots."""
         self.tree_widget.itemClicked.connect(self.on_item_clicked)
