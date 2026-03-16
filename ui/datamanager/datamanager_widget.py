@@ -417,7 +417,7 @@ class DataManagerWidget(QWidget):
         self.add_to_viewer_btn.setEnabled(is_child and not is_default_message)
         self.delete_item_btn.setEnabled(is_child and not is_default_message)
         
-        # Emit signal for data selection (skip default message)
+        # Emit signal for data selection: placeholder when category or default row; entity/note when child
         if is_child and not is_default_message:
             # Get entity data from item
             item_data = item.data(0, Qt.ItemDataRole.UserRole)
@@ -425,6 +425,9 @@ class DataManagerWidget(QWidget):
                 signal_hub.data_selected.emit("entity", item_data)
             else:
                 signal_hub.data_selected.emit("entity", item.text(column))
+        else:
+            # Category or non-selectable row: show placeholder in Display Menu
+            signal_hub.data_selected.emit("none", None)
             
     def on_item_double_clicked(self, item: QTreeWidgetItem, column: int):
         """Handle item double click - open in editor."""

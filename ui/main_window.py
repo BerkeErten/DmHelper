@@ -87,6 +87,11 @@ class MainWindow(QMainWindow):
         toggle_statblock_viewer_action.triggered.connect(self.toggle_statblock_viewer)
         view_menu.addAction(toggle_statblock_viewer_action)
         
+        toggle_display_menu_action = QAction("Toggle Display &Menu", self)
+        toggle_display_menu_action.setShortcut("Ctrl+M")
+        toggle_display_menu_action.triggered.connect(self.toggle_display_menu)
+        view_menu.addAction(toggle_display_menu_action)
+        
         knowledge_base_action = QAction("Knowledge &Base", self)
         knowledge_base_action.setShortcut("Ctrl+K")
         knowledge_base_action.triggered.connect(self.open_knowledge_base)
@@ -214,6 +219,9 @@ class MainWindow(QMainWindow):
             
             # Setup StatBlock Viewer as a dock widget
             self.setup_statblock_viewer_dock()
+            
+            # Setup Display Menu as a dock widget (left by default)
+            self.setup_display_menu_dock()
         except Exception as e:
             print(f"Error in setup_layout: {e}")
             import traceback
@@ -257,7 +265,22 @@ class MainWindow(QMainWindow):
         
         # Hide by default
         self.statblock_viewer_dock.hide()
-        
+
+    def setup_display_menu_dock(self):
+        """Setup Display Menu dock widget (left by default, user can dock left/right/bottom or float)."""
+        from ui.display_menu.display_menu_widget import DisplayMenuWidget
+
+        self.display_menu_dock = QDockWidget("Display Menu", self)
+        self.display_menu_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+            | Qt.DockWidgetArea.BottomDockWidgetArea
+        )
+        self.display_menu_widget = DisplayMenuWidget()
+        self.display_menu_dock.setWidget(self.display_menu_widget)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.display_menu_dock)
+        # Visible by default
+
     def connect_signals(self):
         """Connect signals and slots."""
         # Connect signal hub to toggle actions
@@ -332,7 +355,11 @@ class MainWindow(QMainWindow):
         """Toggle statblock viewer visibility."""
         visible = not self.statblock_viewer_dock.isVisible()
         self.statblock_viewer_dock.setVisible(visible)
-            
+
+    def toggle_display_menu(self):
+        """Toggle Display Menu visibility."""
+        self.display_menu_dock.setVisible(not self.display_menu_dock.isVisible())
+
     def on_quickref_toggle(self, visible: bool):
         """Handle quick reference toggle signal."""
         self.quickref_dock.setVisible(visible)
