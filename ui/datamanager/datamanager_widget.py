@@ -16,6 +16,8 @@ _BUTTON_SIZE = 22
 _BUTTON_MARGIN = 6
 _BUTTON_BG = QColor(0x4c, 0x4c, 0x4c)
 _BUTTON_FG = QColor(0xff, 0xff, 0xff)
+_PLUS_PEN_WIDTH = 1.2
+_PLUS_HALF_SPAN = 3
 
 
 class TreeButtonDelegate(QStyledItemDelegate):
@@ -41,12 +43,12 @@ class TreeButtonDelegate(QStyledItemDelegate):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(_BUTTON_BG))
         painter.drawEllipse(btn_rect)
-        painter.setPen(QPen(_BUTTON_FG, 1.5))
+        painter.setPen(QPen(_BUTTON_FG, _PLUS_PEN_WIDTH))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         cx, cy = btn_rect.center().x(), btn_rect.center().y()
-        hw = 4
-        painter.drawLine(cx - hw, cy, cx + hw, cy)
-        painter.drawLine(cx, cy - hw, cx, cy + hw)
+        s = _PLUS_HALF_SPAN
+        painter.drawLine(cx - s, cy, cx + s, cy)
+        painter.drawLine(cx, cy - s, cx, cy + s)
         painter.restore()
 
     @staticmethod
