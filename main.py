@@ -1,8 +1,13 @@
 """Main entry point for DM Helper application."""
 import sys
+from PyQt6.QtCore import Qt
 from core.app import create_app
 from core.database import init_database
 from ui.main_window import MainWindow
+from core.settings import (
+    get_start_fullscreen_at_startup,
+    get_start_borderless_fullscreen_at_startup,
+)
 
 
 def main():
@@ -16,7 +21,13 @@ def main():
         
         # Create and show main window
         window = MainWindow()
-        window.show()
+        if get_start_fullscreen_at_startup():
+            if get_start_borderless_fullscreen_at_startup():
+                window.showMaximized()
+            else:
+                window.showFullScreen()
+        else:
+            window.show()
         
         # Run event loop
         sys.exit(app.exec())

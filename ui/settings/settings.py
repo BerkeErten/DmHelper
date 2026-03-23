@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QLineEdit, QDialogButtonBox, QMessageBox,
     QStackedWidget, QWidget, QFrame, QCheckBox, QScrollArea,
-    QAbstractItemView,
+    QAbstractItemView, QRadioButton, QButtonGroup,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QKeyEvent, QFocusEvent
@@ -15,6 +15,10 @@ from core.settings import (
     set_combat_tracker_show_mark_defeated,
     get_data_manager_show_hover_add_button,
     set_data_manager_show_hover_add_button,
+    get_start_fullscreen_at_startup,
+    set_start_fullscreen_at_startup,
+    get_start_borderless_fullscreen_at_startup,
+    set_start_borderless_fullscreen_at_startup,
 )
 
 # Shared styles (app theme: neutral dark grays)
@@ -325,6 +329,80 @@ class DataManagerSettingsPage(QWidget):
         return True
 
 
+class GeneralSettingsPage(QWidget):
+    """General settings."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._setup_ui()
+        self._load()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+
+        title = QLabel("General Settings")
+        title.setStyleSheet(_PAGE_TITLE)
+        layout.addWidget(title)
+
+        _add_section_heading(layout, "Window")
+        # Startup window mode (windowed / fullscreen / borderless fullscreen)
+        mode_widget = QWidget()
+        mode_layout = QVBoxLayout(mode_widget)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.setSpacing(6)
+
+        self.start_mode_group = QButtonGroup(self)
+        self.mode_windowed = QRadioButton("Windowed")
+        self.mode_fullscreen = QRadioButton("Fullscreen")
+        self.mode_borderless = QRadioButton("Windowed Fullscreen")
+
+        for rb in (self.mode_windowed, self.mode_fullscreen, self.mode_borderless):
+            rb.setStyleSheet("color: #E2E8F0;")
+            self.start_mode_group.addButton(rb)
+
+        # Assign ids
+        self.start_mode_group.setId(self.mode_windowed, 0)
+        self.start_mode_group.setId(self.mode_fullscreen, 1)
+        self.start_mode_group.setId(self.mode_borderless, 2)
+
+        mode_layout.addWidget(self.mode_windowed)
+        mode_layout.addWidget(self.mode_fullscreen)
+        mode_layout.addWidget(self.mode_borderless)
+
+        _add_setting_row(
+            layout,
+            "Startup window mode",
+            "Choose how the main window is opened on startup.",
+            mode_widget,
+        )
+
+        layout.addStretch()
+
+    def _load(self):
+        # Priority: windowed fullscreen > fullscreen > windowed
+        if get_start_borderless_fullscreen_at_startup():
+            self.start_mode_group.button(2).setChecked(True)
+        elif get_start_fullscreen_at_startup():
+            self.start_mode_group.button(1).setChecked(True)
+        else:
+            self.start_mode_group.button(0).setChecked(True)
+
+    def save(self):
+        mode_id = self.start_mode_group.checkedId()
+        if mode_id == 2:
+            set_start_fullscreen_at_startup(True)
+            set_start_borderless_fullscreen_at_startup(True)
+        elif mode_id == 1:
+            set_start_fullscreen_at_startup(True)
+            set_start_borderless_fullscreen_at_startup(False)
+        else:
+            set_start_fullscreen_at_startup(False)
+            set_start_borderless_fullscreen_at_startup(False)
+        return True
+
+
 def _placeholder_page(title: str) -> QWidget:
     """Build a placeholder content page with a section heading."""
     w = QWidget()
@@ -342,7 +420,7 @@ def _placeholder_page(title: str) -> QWidget:
 class SettingsDialog(QDialog):
     """Dialog with left nav list (Combat tracker, Statblock viewer, Data manager, Knowledge base) and right content."""
 
-    NAV_ITEMS = ["Combat tracker", "Statblock viewer", "Data manager", "Knowledge base"]
+    NAV_ITEMS = ["General", "Combat tracker", "Statblock viewer", "Data manager", "Knowledge base"]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -402,7 +480,8 @@ class SettingsDialog(QDialog):
         )
         for title in self.NAV_ITEMS:
             self.nav_list.addItem(QListWidgetItem(title))
-        self.nav_list.setCurrentRow(0)
+        # Keep the same default tab (Combat tracker) as before.
+        self.nav_list.setCurrentRow(1)
         self.nav_list.currentRowChanged.connect(self._on_nav_changed)
         nav_layout.addWidget(self.nav_list)
         row.addWidget(nav_frame)
@@ -410,7 +489,9 @@ class SettingsDialog(QDialog):
         # Right: scrollable content per category (Cursor-style — no section list, single scroll area per page)
         self._combat_tracker_page = CombatTrackerSettingsPage(self)
         self._data_manager_page = DataManagerSettingsPage(self)
+        self._general_page = GeneralSettingsPage(self)
         pages = [
+            self._general_page,
             self._combat_tracker_page,
             _placeholder_page("Statblock viewer"),
             self._data_manager_page,
@@ -453,6 +534,8 @@ class SettingsDialog(QDialog):
 
     def _apply_and_accept(self):
         if isinstance(self._combat_tracker_page, CombatTrackerSettingsPage) and not self._combat_tracker_page.save():
+            return
+        if not self._general_page.save():
             return
         if not self._data_manager_page.save():
             return

@@ -44,7 +44,7 @@ QListWidget::item {
 
 
 def _rules_content_widget() -> QWidget:
-    """Build Rules card expand content: Official Rules <divider> list, Homebrew Rules <divider> list."""
+    """Build Rules card expand content: official and homebrew rules (plus Jump Rule calculator)."""
     from ui.display_menu.jump_calculator_widget import JumpCalculatorWidget
 
     container = QWidget()
@@ -83,6 +83,29 @@ def _rules_content_widget() -> QWidget:
 
     _section("Official Rules", ["Jump Rule"], allow_jump_expand=True)
     _section("Homebrew Rules", ["Crit Table", "Exploding Dice"])
+    return container
+
+
+def _dm_toolkit_content_widget() -> QWidget:
+    """DM Toolkit expand content (dedicated list, not generic placeholder toggles)."""
+    from ui.display_menu.improvised_damage_table_widget import ImprovisedDamageTableWidget
+
+    container = QWidget()
+    container.setStyleSheet("background: transparent;")
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(14, 8, 14, 12)
+    layout.setSpacing(12)
+
+    # Jump Rule gibi: checkbox satırının hemen altında aç/kapat.
+    cb = QCheckBox("Improvised Damage Table")
+    cb.setStyleSheet("color: #E2E8F0; font-size: 12px;")
+    layout.addWidget(cb)
+
+    table = ImprovisedDamageTableWidget()
+    table.setVisible(False)
+    layout.addWidget(table)
+
+    cb.toggled.connect(table.setVisible)
     return container
 
 
@@ -242,6 +265,14 @@ class PlaceholderDisplayWidget(QWidget):
                 "Official and homebrew rules.",
                 "📜",
                 custom_expand_widget=_rules_content_widget(),
+            )
+        )
+        inner_layout.addWidget(
+            self._make_card(
+                "DM Toolkit",
+                "DM tables and utilities for quick improvisation.",
+                "🧰",
+                custom_expand_widget=_dm_toolkit_content_widget(),
             )
         )
         inner_layout.addWidget(

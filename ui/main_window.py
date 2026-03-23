@@ -279,6 +279,7 @@ class MainWindow(QMainWindow):
         self.display_menu_widget = DisplayMenuWidget()
         self.display_menu_dock.setWidget(self.display_menu_widget)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.display_menu_dock)
+        self.resizeDocks([self.display_menu_dock], [450], Qt.Orientation.Horizontal)
         # Visible by default
 
     def connect_signals(self):

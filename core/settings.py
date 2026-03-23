@@ -72,3 +72,33 @@ def set_data_manager_show_hover_add_button(value: bool) -> None:
     """Set whether to show the '+' button on row hover in the Data Manager tree."""
     s = QSettings(_ORG, _APP)
     s.setValue("data_manager_show_hover_add_button", value)
+
+
+def get_start_fullscreen_at_startup() -> bool:
+    """Return whether to start the main window in fullscreen at app startup."""
+    s = QSettings(_ORG, _APP)
+    val = s.value("start_fullscreen_at_startup", False)
+    if isinstance(val, bool):
+        return val
+    return str(val).lower() in ("1", "true", "yes")
+
+
+def set_start_fullscreen_at_startup(value: bool) -> None:
+    """Persist whether to start the main window in fullscreen at app startup."""
+    s = QSettings(_ORG, _APP)
+    s.setValue("start_fullscreen_at_startup", value)
+
+
+def get_start_borderless_fullscreen_at_startup() -> bool:
+    """Return whether to start the main window in borderless fullscreen at app startup."""
+    s = QSettings(_ORG, _APP)
+    val = s.value("start_borderless_fullscreen_at_startup", False)
+    if isinstance(val, bool):
+        return val
+    return str(val).lower() in ("1", "true", "yes")
+
+
+def set_start_borderless_fullscreen_at_startup(value: bool) -> None:
+    """Persist whether to start the main window in borderless fullscreen at app startup."""
+    s = QSettings(_ORG, _APP)
+    s.setValue("start_borderless_fullscreen_at_startup", value)

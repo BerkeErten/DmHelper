@@ -146,6 +146,10 @@ dm_helper/
    - `adv` - Roll d20 with advantage
    - `stat` - Generate an ability score
 
+## Acknowledgments
+
+- **Jump calculator** (method, UI, and logic) – based on [Fexlabs](https://fexlabs.com).
+
 ## License
 
 MIT License
